@@ -8,6 +8,7 @@ from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
 
 import submissions.adjustments.tables  # noqa: F401  (registers tables on metadata, and the view)
+import submissions.users  # noqa: F401  (app_user)
 import submissions.bureaus.tables  # noqa: F401  (registers tables on metadata)
 import submissions.canonical.schema  # noqa: F401
 import submissions.ops.tables  # noqa: F401

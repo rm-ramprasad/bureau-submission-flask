@@ -53,8 +53,13 @@
       <div class="worker {{ 'ok' if worker_alive else 'down' }}">
         <span class="dot"></span>{{ 'Worker online' if worker_alive else 'No worker running' }}
       </div>
-      <div class="user"><span class="avatar">{{ current_user_name[:2] | upper }}</span>
-        <span><strong>{{ current_user_name }}</strong><small>Bureau reporting team</small></span></div>
+      <div class="user"><span class="avatar">{{ (display_name or current_user_name)[:2] | upper }}</span>
+        <span><strong>{{ display_name or current_user_name }}</strong><small>{{ current_user_name if display_name else 'Bureau reporting team' }}</small></span></div>
+      {% if auth_enabled and display_name %}
+      <div class="user-actions"><a href="{{ url_for('auth.change_password') }}">Change password</a>
+        <form method="post" action="{{ url_for('auth.logout') }}" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="linkish">Sign out</button></form></div>
+      {% endif %}
     </div>
   </aside>
 

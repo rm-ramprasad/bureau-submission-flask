@@ -8,15 +8,16 @@
 
 ## Status (22-10-2026)
 
-**Built and tested:** 384 tests passed, 1 skipped (it needs an empty scratch MySQL); the new SQL was also checked on RDS MySQL.
+**Built and tested:** 396 tests passed, 1 skipped (it needs an empty scratch MySQL); the new SQL was also checked on RDS MySQL.
 - **Live on EC2** (`i-080783c59045ca2ca`, Docker; decision 19), with S3 files and RDS MySQL.
 - **Request flow:** request (draft) → exceptions → validation → files (§5.1). Exclusions and overrides are joined into the extract in SQL, with an audit copy per snapshot (§4).
 - **Validation:** 105 UCRF consumer rules. Per NBFC: on/off and outcome, rule parameters, custom rules without SQL (Rules & policies).
 - **UI:** dashboard with request-stage KPIs, tracker, Files, Findings actions, Audit. Every change is audited.
-- **Migrations applied on RDS:** 001–009.
+- **Access:** https://52-66-49-134.sslip.io with in-app login (J.5, J.7).
+- **Migrations applied on RDS:** 001–010.
 
 **Open:**
-- J.5 login and J.7 user access to the EC2 app (decide together).
+- Users to be added on the server; later a company subdomain instead of sslip.io.
 - H.6 encoding review against a CIC sample file.
 - A.2 / A.4 real LMS schema and bureau member IDs.
 - K.7b NBFC & bureau page, K.9 trends, K.10 / K.11 Commercial and NeSL.
@@ -339,15 +340,10 @@ tests/
 - [x] J.2 Retention (`python -m submissions.ops.retention --days N [--dry-run]`): canonical rows, findings, record outcomes and files removed; summary kept; snapshot PURGED
 - [x] J.3 Scheduled runs (`python -m submissions.ops.schedule --cycle ME|W1|W2|W3|DL [--mode GENERATE]`) for all active tenants, default as-of per cycle; triggered by Task Scheduler / cron
 - [x] J.4 Audit trail (`audit_event`, UI Audit page) for UI actions, downloads, scheduler, recovery, purge; [RUNBOOK.md](RUNBOOK.md)
-- [ ] J.5 Login via `current_user()` hook (when needed)
+- [x] J.5 **In-app login** (22-10-2026, migration 010 `app_user`): username + password (salted hashes), 8-hour sessions, lockout after 5 wrong passwords, change password, user CLI `python -m submissions.users`, audited; `SUBMISSIONS_AUTH=login` on the server, `none` for local development
 - [x] J.6 Worker heartbeat (`worker_heartbeat`) + UI banner "No worker running" when the last poll is older than 30 s
 - [x] J.8 EC2 deployment (decision 19): Dockerfile, compose, `deploy/` scripts, IAM (including the deny exceptions on the shared instance role), security groups EC2 ↔ RDS; RUNBOOK "Deploying on EC2"
-- [ ] J.7 **User access to the EC2 app (deferred):**
-  - Today it's reached only through an SSM port-forward tunnel (`localhost:8000`).
-  - **To decide:** how the ~5 users connect. With an office network or VPN into the VPC, add inbound 8000 from that range on `sg-0945fe12331ab8cd0`, then use `http://<private-ip>:8000`. Without one, each user runs the SSM tunnel.
-  - Do this together with J.5 login. Never open 8000 on the public IP while there's no login and only HTTP.
-
-### Phase K: UI and extensions (order = build order)
+- [x] J.7 **User access (Option C, 22-10-2026):** https://52-66-49-134.sslip.io. Caddy on the EC2 (Let's Encrypt), Elastic IP 52.66.49.134, inbound 80/443; app port 8000 only on the server. Later: a company subdomain (DNS A record + SITE_ADDRESS), or Option A (load balancer + company sign-in)
 - [x] K.1 **Layout:**
   - sidebar navigation (MAIN / REPORTS / ADMIN), top bar with breadcrumb, global NBFC selector (session) and "+ New request";
   - worker status and user in the sidebar footer; restyled components (cards, tables, badges, meters);

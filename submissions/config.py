@@ -19,6 +19,8 @@ class Settings:
     s3_prefix: str = "bureau-submissions"
     s3_region: str | None = None             # None = from the AWS config/environment
     s3_kms_key_id: str | None = None         # SSE-KMS key; None = SSE-S3 (AES256)
+    auth: str = "none"                       # "login" (username + password, the server default) or "none" (dev/tests)
+    https: bool = False                      # behind the HTTPS proxy: trust X-Forwarded-Proto, secure cookies
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -39,4 +41,6 @@ class Settings:
             s3_prefix=os.environ.get("SUBMISSIONS_S3_PREFIX", "bureau-submissions"),
             s3_region=os.environ.get("SUBMISSIONS_S3_REGION") or None,
             s3_kms_key_id=os.environ.get("SUBMISSIONS_S3_KMS_KEY_ID") or None,
+            auth=os.environ.get("SUBMISSIONS_AUTH", "login").lower(),
+            https=os.environ.get("SUBMISSIONS_HTTPS", "").lower() in ("1", "true", "yes"),
         )

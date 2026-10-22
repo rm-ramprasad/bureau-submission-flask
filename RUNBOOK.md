@@ -188,6 +188,40 @@ Then log out and back in.
 - The instance holds no data (everything is in MySQL and S3). If it's lost, launch a new one and repeat steps 2–3 with the same `.env` values.
 - Keep a copy of `.env` somewhere safe, such as a password manager or SSM Parameter Store. Without the same secret key, open UI sessions log out; nothing else is affected.
 
+## Access and login (Option C: HTTPS on the server + in-app login)
+
+**Users open https://52-66-49-134.sslip.io** in a browser and sign in with their username and password. They need no VPN or other software.
+
+**How it works:**
+- **HTTPS:** a **Caddy** container on the EC2 terminates HTTPS with a free Let's Encrypt certificate, renewed automatically. It forwards to the app on the server.
+- **Ports:** Elastic IP `52.66.49.134` (`eipalloc-0c4be3dcbd2790eb9`). Security group `sg-0945fe12331ab8cd0` allows 80 (Let's Encrypt and the redirect to HTTPS) and 443 from anywhere. The app's port 8000 listens only on the server itself; the SSM tunnel still works for admins.
+- **Login** (`SUBMISSIONS_AUTH=login`):
+  - every page needs a signed-in user, and a session lasts 8 hours;
+  - 5 wrong passwords lock the account for 15 minutes;
+  - passwords are stored only as salted hashes (at least 10 characters, letters and digits).
+- **Audit:** `LOGIN`, `LOGIN_FAILED` (with IP), `LOGOUT`, `PASSWORD_CHANGED`, `USER_ADDED`, `PASSWORD_RESET`.
+- **Settings** in `/opt/submissions/.env`: `SUBMISSIONS_AUTH=login`, `SUBMISSIONS_HTTPS=true`, `SITE_ADDRESS=52-66-49-134.sslip.io`.
+
+**Managing users** (on the server, in `/opt/submissions`, through Session Manager):
+
+| Task | Command |
+|---|---|
+| Add a user (asks for the password twice) | `docker compose run --rm worker python -m submissions.users add asha.k --name "Asha K"` |
+| Add with a generated first password (printed once) | `... add asha.k --name "Asha K" --generate` |
+| Add an administrator | add `--admin` |
+| Reset a password (also unlocks) | `docker compose run --rm worker python -m submissions.users passwd asha.k --generate` |
+| Disable / enable a leaver | `... users disable asha.k` / `... users enable asha.k` |
+| List users | `docker compose run --rm -T worker python -m submissions.users list` |
+
+Users change their own password from the sidebar (**Change password**). Share first passwords privately, not by e-mail.
+
+**Using your own domain later:**
+1. Point a DNS A record (e.g. `bureau.openterrace.in`) at `52.66.49.134`.
+2. Set `SITE_ADDRESS=bureau.openterrace.in` in `.env`.
+3. Run `docker compose up -d`. Caddy gets the new certificate itself.
+
+**Local development:** `$env:SUBMISSIONS_AUTH = "none"` turns the login off on your laptop, or add yourself locally with `python -m submissions.users add`.
+
 ## Migrations so far
 
 | File | Adds |
@@ -197,6 +231,7 @@ Then log out and back in.
 | 007 | `submission_adjustment.batch_id`: exceptions belong to a request (DRAFT status) |
 | 008 | `validation_parameter`: per-NBFC rule parameter overrides |
 | 009 | `validation_rule.definition` / `created_by`: custom rules built without SQL |
+| 010 | `app_user`: in-app login |
 
 ## Database changes
 

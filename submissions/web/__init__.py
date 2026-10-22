@@ -44,8 +44,12 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None, s
         adjustments=AdjustmentRepository(engine))
 
     from submissions.ops.heartbeat import last_seen, worker_alive
-    from submissions.web import csrf, views
+    from submissions.web import auth, csrf, views
+    if settings.https:                                   # behind the HTTPS proxy (Caddy): real scheme and host
+        from werkzeug.middleware.proxy_fix import ProxyFix
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
     csrf.init_app(app)
+    auth.init_app(app, settings.auth, settings.https)
     app.register_blueprint(views.bp)
 
     css = Path(app.static_folder) / "app.css"

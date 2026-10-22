@@ -175,3 +175,14 @@ button.linkish:hover { text-decoration: underline; filter: none; }
 .custom-form .grow { flex: 1; }
 .preview { margin-top: 12px; background: var(--soft); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
 table.mini { width: auto; margin-top: 8px; } table.mini td, table.mini th { padding: 4px 10px; }
+
+/* Login */
+body.login-page { display: grid; place-items: center; min-height: 100vh; }
+.login-box { width: 100%; max-width: 380px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 24px 28px; margin: 16px; box-sizing: border-box; }
+.login-box .brand { padding: 0 0 16px; border-bottom: 0; }
+.login-box input[type=text], .login-box input[type=password] { width: 100%; box-sizing: border-box; }
+.stack.narrow { max-width: 420px; }
+.stack.narrow input[type=password] { width: 100%; box-sizing: border-box; }
+input[type=password] { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+.user-actions { margin-top: 8px; font-size: 12.5px; display: flex; gap: 12px; }

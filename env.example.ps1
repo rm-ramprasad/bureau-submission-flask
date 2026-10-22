@@ -11,3 +11,7 @@ $env:SUBMISSIONS_STORAGE       = "s3"
 $env:SUBMISSIONS_S3_BUCKET     = "opta-s3-demo"
 $env:SUBMISSIONS_S3_PREFIX     = "bureau-submissions"
 $env:SUBMISSIONS_S3_REGION     = "ap-south-1"
+
+# Login: "login" (default; add yourself with python -m submissions.users add <name> --name "..." --admin)
+# or "none" for local development without a login
+$env:SUBMISSIONS_AUTH          = "login"

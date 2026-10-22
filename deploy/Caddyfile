@@ -1,0 +1,15 @@
+# HTTPS in front of the web app. Caddy gets and renews a Let's Encrypt certificate for SITE_ADDRESS (set in .env,
+# e.g. 13-201-10-20.sslip.io until a company subdomain such as bureau.openterrace.in points at the server).
+# Needs inbound 80 and 443 on the instance's security group. HTTP is redirected to HTTPS.
+
+{$SITE_ADDRESS} {
+	encode gzip
+	reverse_proxy web:8000
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+}

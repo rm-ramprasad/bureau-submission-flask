@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Bureau Submissions</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v=asset_version) }}">
+</head>
+<body class="login-page">
+<main class="login-box">
+  <div class="brand"><span class="brand-mark"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></span>
+    <span><strong>Bureau Submissions</strong><small>Credit bureau reporting</small></span></div>
+  {% for category, message in get_flashed_messages(with_categories=true) %}
+    <div class="flash {{ category }}">{{ message }}</div>
+  {% endfor %}
+  <form method="post" action="{{ url_for('auth.login') }}" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" value="{{ username or '' }}" autocomplete="username" required autofocus>
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="current-password" required>
+    <p><button type="submit">Sign in</button></p>
+  </form>
+  <p class="hint">Forgot your password? Ask the administrator to reset it.</p>
+</main>
+</body>
+</html>
