@@ -314,7 +314,7 @@ tests/
   - adjustment repository (add / remove / list, bulk keys, override replaces the previous one for the same loan and field);
   - **joined into the extract SQL** (freeze → resolve → wrapped entity SELECTs) and the `UCRF.ADJ.NOT_FOUND` warning;
   - tests: joint loan, customer with two loans, DPD/overdue overrides changing validation, audit copy, the same-server requirement.
-- [ ] K.5 **Exceptions page:**
+- [x] K.5 **Exceptions page** (stale = the active adjustments differ from the snapshot's frozen copy):
   - capture exclusions (bulk paste or pick from records) and overrides (current value shown), with optional reasons; list with status and remove;
   - "Re-validate with adjustments";
   - Generate blocked while re-validation is pending, with a confirmation showing counts;

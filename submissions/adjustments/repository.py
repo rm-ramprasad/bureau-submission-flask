@@ -175,6 +175,12 @@ class AdjustmentRepository:
         return [AppliedAdjustment(**{k: v for k, v in r._mapping.items() if k != "effect_id"}
                                   | {"field": OverrideField(r.field) if r.field else None}) for r in rows]
 
+    def is_stale(self, snapshot_id: int, tenant_id: str, as_of_date: date,
+                 submission_type: SubmissionType | str) -> bool:
+        """True if adjustments were added or removed since the snapshot froze its copy (re-validate first)."""
+        active = {a.adjustment_id for a in self.list(tenant_id, as_of_date, submission_type)}
+        return active != set(self.frozen(snapshot_id))
+
     def frozen(self, snapshot_id: int) -> dict[int, int]:
         """adjustment_id -> loans affected, for the adjustments frozen on this snapshot (from the view)."""
         with self.engine.connect() as conn:

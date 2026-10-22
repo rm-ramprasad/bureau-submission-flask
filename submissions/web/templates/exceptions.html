@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Exceptions · Bureau Submissions{% endblock %}
+{% block crumb %}Exceptions{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Exceptions{% if tenant %} · {{ tenant.display_name }}{% endif %}</h1>
+    <p class="subtitle">Exclude loans or customers and override loan values for one as-of date. They are applied to the
+      data when it is extracted, so the next validation checks exactly what will be submitted.</p>
+  </div>
+</div>
+
+{% if not tenant %}
+<div class="panel"><p>Select an NBFC in the top bar to capture its exclusions and overrides.</p></div>
+{% else %}
+
+<form method="get" class="panel row scope">
+  <div><label for="as_of">As-of date</label><input type="date" id="as_of" name="as_of" value="{{ as_of.isoformat() }}" required></div>
+  <div><label for="type">Submission type</label>
+    <select id="type" name="type">{% for t in types %}<option value="{{ t.value }}" {{ 'selected' if t == sub_type }}>{{ t.value | title }}</option>{% endfor %}</select></div>
+  <div class="choices"><label><input type="checkbox" name="history" value="1" {{ 'checked' if history }}> Show removed</label></div>
+  <div><button type="submit" class="secondary">Show</button></div>
+</form>
+
+{# ------------------------------------------------ validation status #}
+<div class="panel status {{ 'stale' if stale or not latest }}">
+  <div>
+    {% if not latest %}
+      <strong>No validation yet for {{ as_of | d }}.</strong>
+      <span class="muted">Adjustments apply when you validate.</span>
+    {% elif stale %}
+      <strong>Re-validation needed.</strong>
+      Adjustments changed after the latest validation
+      (<a href="{{ url_for('ui.findings', snapshot_id=latest.snapshot_id) }}">snapshot #{{ latest.snapshot_id }}</a>, {{ latest.created_at | dt }} UTC).
+      Files cannot be generated until it is re-validated.
+    {% else %}
+      <strong>Up to date.</strong>
+      The latest validation (<a href="{{ url_for('ui.findings', snapshot_id=latest.snapshot_id) }}">snapshot #{{ latest.snapshot_id }}</a>,
+      {{ latest.created_at | dt }} UTC) includes every current adjustment. Generate files from its batch page{% if latest.batch_id %} (<a href="{{ url_for('ui.batch', batch_id=latest.batch_id) }}">open</a>){% endif %}.
+    {% endif %}
+  </div>
+  <form method="post" action="{{ url_for('ui.revalidate') }}" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="as_of" value="{{ as_of.isoformat() }}"><input type="hidden" name="type" value="{{ sub_type.value }}">
+    <button type="submit" class="{{ '' if stale or not latest else 'secondary' }}">Re-validate with adjustments</button>
+  </form>
+</div>
+
+{# ------------------------------------------------ capture #}
+<div class="grid two">
+  <form method="post" action="{{ url_for('ui.add_exclusions') }}" class="panel stack">
+    <h2>Exclude</h2>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="as_of" value="{{ as_of.isoformat() }}"><input type="hidden" name="type" value="{{ sub_type.value }}">
+    <div class="choices">
+      <label><input type="radio" name="kind" value="account" checked> Loan account numbers</label>
+      <label><input type="radio" name="kind" value="customer"> Customer IDs (all their loans)</label>
+    </div>
+    <label for="keys">One per line (paste a column from Excel)</label>
+    <textarea id="keys" name="keys" rows="6" required placeholder="B122HL10788234&#10;B107PL79230310"></textarea>
+    <label for="ex_reason">Reason <span class="muted">(optional)</span></label>
+    <input type="text" id="ex_reason" name="reason" maxlength="500">
+    <p><button type="submit">Add exclusions</button></p>
+  </form>
+
+  <form method="post" action="{{ url_for('ui.add_override') }}" class="panel stack">
+    <h2>Override a value</h2>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="as_of" value="{{ as_of.isoformat() }}"><input type="hidden" name="type" value="{{ sub_type.value }}">
+    <label for="account_number">Loan account number</label>
+    <input type="text" id="account_number" name="account_number" maxlength="50" required>
+    <div class="row">
+      <div><label for="field">Field</label>
+        <select id="field" name="field" required>{% for f in fields %}<option value="{{ f.value }}">{{ f.label }}</option>{% endfor %}</select></div>
+      <div><label for="value">New value</label><input type="text" id="value" name="value" inputmode="decimal" required></div>
+    </div>
+    <p class="hint">OD days: whole number. Amounts in rupees, up to 2 decimals; only the ledger balance may be negative.
+      A new override replaces the previous one for the same loan and field.</p>
+    <label for="ov_reason">Reason <span class="muted">(optional)</span></label>
+    <input type="text" id="ov_reason" name="reason" maxlength="500">
+    <p><button type="submit">Save override</button></p>
+  </form>
+</div>
+
+{# ------------------------------------------------ current adjustments #}
+<div class="panel flush">
+  <div class="panel-head"><h2>{{ 'All adjustments' if history else 'Current adjustments' }} · {{ as_of | d }} · {{ sub_type.value | title }}</h2>
+    <span class="muted">{{ adjustments | length }} item(s)</span></div>
+  {% if adjustments %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Kind</th><th>Loan / customer</th><th>Change</th><th>Reason</th><th>By</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {% for a in adjustments %}
+      {% set hits = effects.get(a.adjustment_id, []) %}
+      <tr class="{{ 'removed' if not a.is_active }}">
+        <td>{{ {'EXCLUDE_ACCOUNT': 'Exclude loan', 'EXCLUDE_CUSTOMER': 'Exclude customer', 'OVERRIDE': 'Override'}[a.kind.value] }}</td>
+        <td class="mono">{{ a.key }}</td>
+        <td>{% if a.field %}{{ a.field.label }}:
+              {% for h in hits if h.action == 'OVERRIDE' %}{{ h.old_value if h.old_value is not none else '—' }} → {% endfor %}<strong>{{ a.override_value }}</strong>
+            {% elif a.kind.value == 'EXCLUDE_CUSTOMER' and hits %}{{ hits | selectattr('action', 'equalto', 'EXCLUDE') | list | length }} loan(s)
+            {% else %}<span class="muted">whole loan</span>{% endif %}</td>
+        <td>{{ a.reason or '' }}</td>
+        <td>{{ a.created_by }}<div class="hint">{{ a.created_at | dt }}</div></td>
+        <td>
+          {% if not a.is_active %}<span class="badge b-CANCELLED">Removed</span><div class="hint">{{ a.removed_by }}, {{ a.removed_at | dt }}</div>
+          {% elif a.adjustment_id not in frozen %}<span class="badge b-PENDING">Pending re-validation</span>
+          {% elif frozen[a.adjustment_id] == 0 %}<span class="badge b-WARN">Not found</span><div class="hint">in snapshot #{{ latest.snapshot_id }}</div>
+          {% else %}<span class="badge b-SUCCEEDED">Applied</span><div class="hint">snapshot #{{ latest.snapshot_id }} · {{ frozen[a.adjustment_id] }} loan(s)</div>{% endif %}
+        </td>
+        <td>{% if a.is_active %}
+          <form method="post" action="{{ url_for('ui.remove_adjustment', adjustment_id=a.adjustment_id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="small secondary">Remove</button></form>
+        {% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  <div class="panel-body muted">No exclusions or overrides for this date.</div>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

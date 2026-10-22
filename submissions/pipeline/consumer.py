@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from submissions.adapters.extract import run_extract
+from submissions.adjustments.summary import adjustments_csv
 from submissions.adapters.mapping import load_mapping
 from submissions.bureaus import BureauProfile
 from submissions.formats.ucrf_consumer.writer import build_file
@@ -44,7 +45,8 @@ class ConsumerPipeline:
             raise ValueError(f"File name {name!r} from the bureau profile must not contain a path")
         folder = f"{tenant.tenant_id}/{request.batch_id}"
         file_uri = services.store.put(f"{folder}/{name}", content, "text/plain")   # never overwrites
-        csv_text = "".join(findings_csv(services.app_engine, snapshot.snapshot_id, FindingFilter()))
+        csv_text = ("".join(findings_csv(services.app_engine, snapshot.snapshot_id, FindingFilter()))
+                    + adjustments_csv(services.app_engine, snapshot.snapshot_id))
         exceptions_uri = services.store.put(f"{folder}/{Path(name).stem}.exceptions.csv",
                                             csv_text.encode("utf-8"), "text/csv")
         return RequestResult(output_file_name=name, output_file_path=file_uri,

@@ -64,6 +64,12 @@
   </table></div>
   {% endif %}
   <div class="panel-body">
+    {% if info.adjusted.excluded_accounts or info.adjusted.overridden_accounts or info.adjusted.not_found %}
+      <p><strong>Adjustments:</strong> {{ info.adjusted.excluded_accounts }} loan(s) excluded ·
+        {{ info.adjusted.overridden_accounts }} loan(s) overridden
+        {% if info.adjusted.not_found %}· <span class="badge b-WARN">{{ info.adjusted.not_found }} not found</span>{% endif %}
+        · <a href="{{ url_for('ui.exceptions', as_of=info.snapshot.as_of_date.isoformat(), type=info.snapshot.submission_type.value) }}">Exceptions</a></p>
+    {% endif %}
     <span class="muted">Mapping {{ info.snapshot.mapping_version }} · canonical {{ info.snapshot.canonical_version }}</span>
     {% if info.summary %} · <a href="{{ url_for('ui.findings', snapshot_id=snapshot_id) }}">All findings</a> ·
       <a href="{{ url_for('ui.findings_csv', snapshot_id=snapshot_id) }}">Download CSV</a>{% endif %}
@@ -77,13 +83,26 @@
   <h2>Generate files from this validation ({{ r.submission_type.value | title }})</h2>
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="request_id" value="{{ r.request_id }}">
+  {% set info = snapshots[r.snapshot_id] %}
+  {% set exceptions_url = url_for('ui.exceptions', as_of=r.as_of_date.isoformat(), type=r.submission_type.value) %}
+  {% if info.stale %}
+    <div class="flash error">Exclusions or overrides changed after this validation, so its files would not include them.
+      <a href="{{ exceptions_url }}">Re-validate from the Exceptions page</a>, then generate from the new validation.</div>
+  {% else %}
   <p class="muted">Files are written from snapshot #{{ r.snapshot_id }}: exactly the data validated above.</p>
+  {% if info.adjusted.excluded_accounts or info.adjusted.overridden_accounts %}
+    <label class="confirm"><input type="checkbox" name="confirm_adjustments" value="1" required>
+      I confirm <strong>{{ info.adjusted.excluded_accounts }} loan(s) excluded</strong> and
+      <strong>{{ info.adjusted.overridden_accounts }} loan(s) with overrides</strong>, validated in snapshot #{{ r.snapshot_id }}
+      (<a href="{{ exceptions_url }}">review</a>).</label>
+  {% endif %}
   <div class="choices">
     {% for b in bureau_options[r.request_id] %}
       <label><input type="checkbox" name="bureau_codes" value="{{ b.value }}" checked> {{ b.value | replace('_', ' ') | title }}</label>
     {% else %}<span class="muted">No active bureau profiles for this NBFC.</span>{% endfor %}
   </div>
   {% if bureau_options[r.request_id] %}<p><button type="submit">Generate files</button></p>{% endif %}
+  {% endif %}
 </form>
 {% endfor %}
 {% endblock %}

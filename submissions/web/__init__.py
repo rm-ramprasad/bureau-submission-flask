@@ -12,6 +12,7 @@ from pathlib import Path
 from flask import Flask
 from sqlalchemy import Engine
 
+from submissions.adjustments import AdjustmentRepository
 from submissions.bureaus import BureauRepository
 from submissions.config import Settings
 from submissions.db import make_engine
@@ -29,6 +30,7 @@ class WebServices:
     tenants: TenantRepository
     bureaus: BureauRepository
     snapshots: SnapshotRepository
+    adjustments: AdjustmentRepository
 
 
 def create_app(settings: Settings | None = None, engine: Engine | None = None, store: FileStore | None = None) -> Flask:
@@ -38,7 +40,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None, s
     app.config.update(SECRET_KEY=settings.secret_key, MAX_CONTENT_LENGTH=1024 * 1024)
     app.extensions["submissions"] = WebServices(
         engine=engine, store=store or make_store(settings), requests=RequestRepository(engine),
-        tenants=TenantRepository(engine), bureaus=BureauRepository(engine), snapshots=SnapshotRepository(engine))
+        tenants=TenantRepository(engine), bureaus=BureauRepository(engine), snapshots=SnapshotRepository(engine),
+        adjustments=AdjustmentRepository(engine))
 
     from submissions.ops.heartbeat import last_seen, worker_alive
     from submissions.web import csrf, views
