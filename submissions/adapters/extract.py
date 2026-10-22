@@ -15,6 +15,7 @@ from sqlalchemy import Engine, delete, text
 
 from submissions.adapters.compiler import CompiledMapping, compile_mapping
 from submissions.adapters.mapping import Mapping
+from submissions.adjustments import sql as adjustment_sql
 from submissions.canonical.definition import ColumnDef
 from submissions.canonical.schema import ENTITY_TABLES, MODEL
 from submissions.enums import ExtractStrategy, SubmissionType
@@ -86,24 +87,59 @@ def _insert_select(entity: str, sql: str, params: dict, snapshot_id: int, app: E
 
 
 def purge_rows(app: Engine, snapshot_id: int) -> None:
-    """Delete a snapshot's canonical rows (the snapshot header stays)."""
+    """Delete a snapshot's canonical rows and adjustment records (the snapshot header stays)."""
+    from submissions.adjustments.tables import snapshot_adjustment, snapshot_adjustment_effect
     with app.begin() as conn:
-        for table in ENTITY_TABLES.values():
+        for table in (*ENTITY_TABLES.values(), snapshot_adjustment_effect, snapshot_adjustment):
             conn.execute(delete(table).where(table.c.snapshot_id == snapshot_id))
+
+
+def _same_server(tenant: Tenant, source: Engine, app: Engine) -> bool:
+    # the worker uses one engine for both when SUBMISSIONS_SOURCE_DATABASE_URL is unset or equal
+    return tenant.extract_strategy is ExtractStrategy.INSERT_SELECT or source is app
+
+
+def _prepare_adjustments(compiled: CompiledMapping, tenant: Tenant, snapshot_id: int, as_of_date: date,
+                         source: Engine, app: Engine) -> bool:
+    """Freeze the active adjustments and resolve what they hit. True if the snapshot has any."""
+    params = {"snapshot_id": snapshot_id, "as_of_date": as_of_date}
+    with app.begin() as conn:
+        frozen = conn.execute(text(adjustment_sql.freeze_sql()), params).rowcount
+    if not frozen:
+        return False
+    if not _same_server(tenant, source, app):
+        raise ExtractError(f"{frozen} exclusion(s)/override(s) are set for this NBFC and date, but its LMS schema "
+                           f"{tenant.source_schema!r} is on another server: adjustments are joined in SQL, so the "
+                           "LMS schema must be on the app's MySQL server (or remove the adjustments)")
+    try:
+        with app.begin() as conn:
+            for stmt in adjustment_sql.resolve_sql(compiled.sql["account"], compiled.sql["account_holder"]):
+                conn.execute(text(stmt), params)
+    except Exception as exc:
+        raise ExtractError(f"adjustments: {exc}") from exc
+    return True
 
 
 def run_extract(*, tenant: Tenant, mapping: Mapping, submission_type: SubmissionType | str, as_of_date: date,
                 app_engine: Engine, source_engine: Engine, snapshots: SnapshotRepository, owner: str,
                 batch_id: str | None = None) -> ExtractResult:
-    """Create a snapshot and fill its canonical tables. On failure the rows are removed, the snapshot is FAILED."""
+    """Create a snapshot and fill its canonical tables with the final data (user adjustments joined in SQL).
+
+    On failure the rows are removed and the snapshot is FAILED.
+    """
     compiled = compile_mapping(mapping, tenant.source_schema)
     snapshot_id = snapshots.create(tenant.tenant_id, submission_type, as_of_date, batch_id, compiled.version, owner)
     counts = {name: 0 for name in MODEL.entities}
     try:
+        adjusted = _prepare_adjustments(compiled, tenant, snapshot_id, as_of_date, source_engine, app_engine)
         for entity, sql in compiled.sql.items():
             params = _params(compiled, entity, as_of_date)
             try:
-                if tenant.extract_strategy is ExtractStrategy.INSERT_SELECT:
+                if adjusted:                      # joined to the adjustments: runs next to the LMS schema
+                    columns = [c.name for c in MODEL.entities[entity].columns]
+                    counts[entity] = _insert_select(entity, adjustment_sql.final_select(entity, sql, columns),
+                                                    params, snapshot_id, app_engine)
+                elif tenant.extract_strategy is ExtractStrategy.INSERT_SELECT:
                     counts[entity] = _insert_select(entity, sql, params, snapshot_id, app_engine)
                 else:
                     counts[entity] = _stream(entity, sql, params, snapshot_id, source_engine, app_engine)

@@ -557,6 +557,17 @@ rules:
         SELECT d.account_key FROM c_account d WHERE d.snapshot_id = :snapshot_id
         GROUP BY d.account_key HAVING COUNT(*) > 1)
 
+  # ------------------------------------------------------------------ user adjustments (Exceptions page)
+  - id: UCRF.ADJ.NOT_FOUND
+    entity: account
+    outcome: WARN
+    message: Exclusion or override matches no loan or customer in this snapshot
+    sql: |
+      SELECT NULL AS row_id, NULL AS account_key, NULL AS party_key,
+             CONCAT_WS(' ', v.kind, COALESCE(v.account_number, v.customer_id), v.field) AS value
+      FROM v_snapshot_adjustment v
+      WHERE v.snapshot_id = :snapshot_id AND v.loans_affected = 0
+
   # ------------------------------------------------------------------ cascade (record decisions)
   - id: UCRF.REC.NO_VALID_ADDRESS
     entity: account_holder

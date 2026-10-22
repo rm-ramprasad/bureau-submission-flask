@@ -33,6 +33,8 @@ class SubmissionRequest:
     accepted_records: int | None
     rejected_records: int | None
     duplicate_records: int | None
+    excluded_accounts: int | None
+    overridden_accounts: int | None
     error_message: str | None
 
     @classmethod
@@ -57,6 +59,8 @@ class RequestResult:
     accepted_records: int | None = None
     rejected_records: int | None = None
     duplicate_records: int | None = None
+    excluded_accounts: int | None = None
+    overridden_accounts: int | None = None
 
 
 @dataclass(frozen=True)

@@ -36,7 +36,7 @@
 | 12 | Validation | Separate stage, runnable alone. **SQL-first rules** over canonical tables, Python only for algorithmic rules. Findings go to tables. Custom per-NBFC rules and policy overrides. |
 | 13 | Tenancy | Isolation by **schema** at extract. Everything after extract carries `tenant_id` / `snapshot_id`. |
 | 14 | UI layout | Sidebar navigation + top bar (breadcrumb, NBFC selector, New request), modelled on the reference "BureauPulse" mock. Still server-rendered Flask with no JS framework or CDN. |
-| 15 | Adjustments (exclusions + overrides) | Users capture **loan account numbers and/or customer IDs to exclude**, and **overrides** for OD days, ledger balance, OD amount and settlement amount, each with an optional reason. They are applied **in the data layer through the SQL view `v_snapshot_adjustment`** while the snapshot is built, **before validation**, so validation checks the final data. Excluding a customer excludes every loan they hold, whole. Applied adjustments are frozen on the snapshot. Clicking Generate confirms and audits them. |
+| 15 | Adjustments (exclusions + overrides) | Users capture **loan account numbers and/or customer IDs to exclude**, and **overrides** for OD days, ledger balance, OD amount and settlement amount, each with an optional reason. They are **joined into the extract in SQL** (exclusions as `NOT EXISTS`, overrides as `COALESCE(override, source value)`), so the snapshot holds the final data and validation checks it. No row edits in Python. Excluding a customer excludes every loan they hold, whole. Applied adjustments are frozen on the snapshot. Clicking Generate confirms and audits them. |
 | 18 | File storage | Generated files and exception CSVs are written to **AWS S3** (`s3://<bucket>/<prefix>/<tenant>/<batch>/<file>`). The URI is stored on `submission_request`. UI downloads stream from S3 through the app (private bucket). Writes are conditional, so nothing is overwritten. Encryption is SSE-S3 or SSE-KMS. Credentials come from the AWS chain (IAM role). The local store is kept for development and tests. |
 | 17 | Validate first, always | No direct GENERATE runs. The New request form and scheduler create **Validate** runs only. Files come only from "Generate files from this validation". |
 | 16 | Deferred | J.5 login, J.7 user access to the EC2 app, H.6 encoding review, A.2/A.4 real bureau IDs and LMS schema: later. |
@@ -92,26 +92,32 @@ Duplicate guard: one active row per `(tenant, date, type, run_mode, bureau)`.
 
 Pipeline tables (`extract_snapshot`, `c_*`, `validation_rule`, `validation_policy`, `validation_finding`, `validation_summary`, `record_outcome`) are specified in DESIGN_PLAN.md. Operations tables: `worker_heartbeat`, `audit_event` (migration 005).
 
-**Adjustments: exclusions and overrides (planned, K.4, migration 006)**
+**Adjustments: exclusions and overrides (K.4, migration 006, built)**
 
 | Object | Kind | Purpose |
 |---|---|---|
 | `submission_adjustment` | table | What users capture, per **tenant + as-of date + submission type** (not per snapshot, so it carries over to the next validation). Columns: `adjustment_id`, `tenant_id`, `as_of_date`, `submission_type`, `kind`, `account_number` / `customer_id`, `field`, `override_value`, `reason` (optional, ≤ 500), `created_by/at`, `removed_by/at` (soft delete). |
-| `v_snapshot_adjustment` | **view** | **The single data-layer definition** of how active adjustments apply to a snapshot. It matches `account_number` against `c_account` and `customer_id` against `c_account_holder.party_key`, expands customer exclusions to **every loan the customer holds**, and returns `snapshot_id, adjustment_id, account_key, action (EXCLUDE / OVERRIDE), field, new_value`. |
-| `snapshot_adjustment` | table | **Frozen record of what was applied** to each snapshot: `snapshot_id, adjustment_id, account_key, action, field, old_value, new_value, applied_at`. Written from the view at build time, with old values taken from `c_account` first. |
+| `snapshot_adjustment` | table | **Frozen copy** of the adjustments in force when a snapshot was extracted (kind, keys, value, reason, who, when). The audit trail: later edits or removals don't change it. |
+| `snapshot_adjustment_effect` | table | What each frozen adjustment hit in the source: `EXCLUDE` per loan (customer exclusions expand to **every loan the customer holds**), `EXCLUDE_PARTY` per borrower left with no loan, `OVERRIDE` per loan field with **old (source) → new** value. |
+| `v_snapshot_adjustment` | **view** | Each frozen adjustment with `loans_affected` (0 = not found). Used by the UI and rule `UCRF.ADJ.NOT_FOUND`. |
 
 - **`kind` values:** `EXCLUDE_ACCOUNT` (by `account_number`), `EXCLUDE_CUSTOMER` (by `customer_id`), and `OVERRIDE`.
 - **`field` (OVERRIDE only):** `days_past_due` (OD days), `current_balance` (ledger balance), `amount_overdue` (OD amount), `settlement_amount`.
 
-**Applying them (the new "adjust" step between extract and validate):** these are plain SQL statements driven by the view.
+**In the extract** ([submissions/adjustments/sql.py](submissions/adjustments/sql.py)): set-based SQL, no Python row edits.
+1. **Freeze:** `INSERT INTO snapshot_adjustment SELECT … FROM submission_adjustment` (active, in scope).
+2. **Resolve:** `INSERT INTO snapshot_adjustment_effect SELECT …`, joining the frozen rows to the tenant's own account and account-holder SELECTs.
+3. **Extract each entity** with its mapping SELECT wrapped in a join to the effects:
+   - excluded loans and borrowers are filtered with `NOT EXISTS`;
+   - overridden fields come from `COALESCE(override, source value)`.
 
-1. `INSERT INTO snapshot_adjustment … SELECT … FROM v_snapshot_adjustment WHERE snapshot_id = :s` (old values joined from `c_account`).
-2. `DELETE` the excluded loans' rows from `c_account`, `c_account_holder`, `c_account_history` and `c_extension_attribute`. Whole loans, all holders.
-3. `UPDATE c_account` with the override values.
+   The `c_*` tables hold the final data; validation and the formatter are unchanged.
 
-Exclusions and overrides that match nothing in the snapshot become a WARN finding `ADJ.NOT_FOUND`, shown on the Exceptions page.
-
-`submission_request` gains `excluded_accounts` and `overridden_accounts`, taken from `snapshot_adjustment`.
+**Requirements and results:**
+- **Same server:** this needs the LMS schema on the app's MySQL server, as on RDS. Without any adjustments, a separate LMS server still works. With adjustments, the extract fails with a clear message.
+- **Not found:** adjustments that hit nothing become the WARN finding `UCRF.ADJ.NOT_FOUND`.
+- **Counts:** `submission_request` gains `excluded_accounts` and `overridden_accounts`.
+- **Retention:** purges the frozen copy and effects with the snapshot's rows.
 
 ## 5. Run lifecycle
 
@@ -302,12 +308,12 @@ tests/
 - [x] K.0 **Validate only:**
   - remove direct GENERATE from the New request form and the scheduler (`--mode`);
   - `create_batch(GENERATE)` requires a validated `snapshot_id`; update tests and RUNBOOK.
-- [ ] K.4 **Migration 006:**
-  - `submission_adjustment`, view `v_snapshot_adjustment`, `snapshot_adjustment`;
+- [x] K.4 **Migration 006:**
+  - `submission_adjustment`, frozen `snapshot_adjustment`, `snapshot_adjustment_effect`, view `v_snapshot_adjustment`;
   - `submission_request.excluded_accounts / overridden_accounts`;
-  - adjustment repository (add / remove / list, bulk add from pasted lists);
-  - the **adjust step** in the snapshot build (view → frozen rows → delete/override) and the `ADJ.NOT_FOUND` warning;
-  - tests incl. mock scenarios (exclude a joint loan via one customer, override DPD/overdue and see validation react).
+  - adjustment repository (add / remove / list, bulk keys, override replaces the previous one for the same loan and field);
+  - **joined into the extract SQL** (freeze → resolve → wrapped entity SELECTs) and the `UCRF.ADJ.NOT_FOUND` warning;
+  - tests: joint loan, customer with two loans, DPD/overdue overrides changing validation, audit copy, the same-server requirement.
 - [ ] K.5 **Exceptions page:**
   - capture exclusions (bulk paste or pick from records) and overrides (current value shown), with optional reasons; list with status and remove;
   - "Re-validate with adjustments";

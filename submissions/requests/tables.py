@@ -40,6 +40,8 @@ submission_request = Table(
     Column("accepted_records", Integer),
     Column("rejected_records", Integer),
     Column("duplicate_records", Integer),
+    Column("excluded_accounts", Integer),        # loans removed by user exclusions (migration 006)
+    Column("overridden_accounts", Integer),      # loans with user overrides
     Column("error_message", Text),
     Index("ix_submission_request_batch", "batch_id"),
     Index("ix_submission_request_status", "status", "requested_at"),

@@ -45,6 +45,26 @@ class SnapshotStatus(StrEnum):
     PURGED = "PURGED"          # rows removed by retention; metadata kept
 
 
+class AdjustmentKind(StrEnum):
+    """What a user-captured adjustment does (applied while the snapshot is built, before validation)."""
+    EXCLUDE_ACCOUNT = "EXCLUDE_ACCOUNT"      # one loan, all its holders
+    EXCLUDE_CUSTOMER = "EXCLUDE_CUSTOMER"    # every loan the customer holds, whole
+    OVERRIDE = "OVERRIDE"                    # replace one c_account value of one loan
+
+
+class OverrideField(StrEnum):
+    """c_account columns users may override, with their UI labels."""
+    DAYS_PAST_DUE = "days_past_due"
+    CURRENT_BALANCE = "current_balance"
+    AMOUNT_OVERDUE = "amount_overdue"
+    SETTLEMENT_AMOUNT = "settlement_amount"
+
+    @property
+    def label(self) -> str:
+        return {"days_past_due": "OD days", "current_balance": "Ledger balance", "amount_overdue": "OD amount",
+                "settlement_amount": "Settlement amount"}[self.value]
+
+
 class BureauCode(StrEnum):
     EXPERIAN = "EXPERIAN"
     CIBIL = "CIBIL"

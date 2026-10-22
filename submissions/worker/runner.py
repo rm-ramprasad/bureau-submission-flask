@@ -8,8 +8,9 @@ from __future__ import annotations
 import logging
 import socket
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
+from submissions.adjustments import applied_summary
 from submissions.bureaus import BureauRepository
 from submissions.enums import RunMode, SnapshotStatus
 from submissions.ops.heartbeat import Heartbeat
@@ -78,6 +79,9 @@ class Worker:
                                         rejected_records=result.rejected)
             else:
                 outcome = self._generate(req, tenant, snapshot, result)
+            adjusted = applied_summary(self.services.app_engine, snapshot.snapshot_id)
+            outcome = replace(outcome, excluded_accounts=adjusted.excluded_accounts,
+                              overridden_accounts=adjusted.overridden_accounts)
             self.requests.mark_succeeded(req.request_id, outcome)
             return True
         except SnapshotBusy as exc:
