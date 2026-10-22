@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Bureau Submissions{% endblock %}
+{% block crumb %}Dashboard{% endblock %}
+{% macro stage_badge(st) %}<span class="badge s-{{ st.value }}">{{ st.label }}</span>{% endmacro %}
+{% macro tracker(stage=None) %}{{ url_for('ui.batches', stage=stage.value if stage else None, period=period.value) }}{% endmacro %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Dashboard</h1>
+    <p class="subtitle">Requests {{ 'for ' ~ selected_tenant if selected_tenant else 'across all NBFCs' }} · {{ period.label | lower }}.
+      Each request is one validation and the files generated from it.</p>
+  </div>
+  <div class="segmented">{% for p in periods %}
+    <a class="{{ 'on' if p == period }}" href="{{ url_for('ui.dashboard', period=p.value) }}">{{ p.label }}</a>{% endfor %}</div>
+</div>
+
+{# ------------------------------------------------ request KPIs #}
+<div class="kpis">
+  <a class="kpi" href="{{ tracker() }}"><span class="label">Requests raised</span>
+    <span class="value">{{ board.raised }}</span><span class="hint">{{ board.scheduled }} scheduled</span></a>
+  {% for st, hint in [
+      (Stage.AWAITING_EXCEPTIONS, 'oldest ' ~ (board.oldest_age(Stage.AWAITING_EXCEPTIONS) | age) if board.count(Stage.AWAITING_EXCEPTIONS) else 'none waiting'),
+      (Stage.IN_PROGRESS, 'oldest ' ~ (board.oldest_age(Stage.IN_PROGRESS) | age) if board.count(Stage.IN_PROGRESS) else 'nothing running'),
+      (Stage.VALIDATED, 'oldest ' ~ (board.oldest_age(Stage.VALIDATED) | age) if board.count(Stage.VALIDATED) else 'none pending'),
+      (Stage.COMPLETED, (board.completion_rate | pct) ~ ' completion rate'),
+      (Stage.FAILED, 'retry or raise a new request' if board.count(Stage.FAILED) else 'none'),
+      (Stage.CANCELLED, 'discarded or cancelled')] %}
+  <a class="kpi k-{{ st.value }}" href="{{ tracker(st) }}"><span class="label">{{ st.label }}</span>
+    <span class="value">{{ board.count(st) }}</span><span class="hint">{{ hint }}</span></a>
+  {% endfor %}
+</div>
+
+{# ------------------------------------------------ data KPIs #}
+<div class="kpis small">
+  <div class="kpi"><span class="label">Records validated</span><span class="value">{{ board.total('records') | num }}</span>
+    <span class="hint">{{ board.acceptance_rate | pct }} accepted</span></div>
+  <div class="kpi"><span class="label">Loans excluded</span><span class="value">{{ board.total('excluded') | num }}</span>
+    <span class="hint">by user exceptions</span></div>
+  <div class="kpi"><span class="label">Loans overridden</span><span class="value">{{ board.total('overridden') | num }}</span>
+    <span class="hint">OD days / balance / amounts</span></div>
+  <div class="kpi"><span class="label">Files generated</span><span class="value">{{ board.files_generated | num }}</span>
+    <span class="hint">{{ board.records_submitted | num }} records submitted</span></div>
+</div>
+
+<div class="grid two">
+  {# ------------------------------------------------ needs attention #}
+  <div class="panel flush">
+    <div class="panel-head"><h2>Needs attention</h2><span class="muted">{{ board.attention | length + (0 if worker_alive else 1) }}</span></div>
+    {% if board.attention or not worker_alive %}
+    <ul class="attention">
+      {% if not worker_alive %}<li class="bad"><strong>No worker running.</strong> Submitted requests wait until a worker is started.</li>{% endif %}
+      {% for a in board.attention %}
+      <li class="{{ 'bad' if a.request.stage == Stage.FAILED else 'warn' }}">
+        <a class="mono" href="{{ url_for('ui.batch', batch_id=a.request.batch_id) }}">{{ a.request.batch_id }}</a>
+        · {{ a.request.tenant_id }} · {{ a.request.first.as_of_date | d }}<div>{{ a.reason }}</div></li>
+      {% endfor %}
+    </ul>
+    {% else %}<div class="panel-body muted">Nothing needs attention.</div>{% endif %}
+  </div>
+
+  {# ------------------------------------------------ bureaus #}
+  <div class="panel flush">
+    <div class="panel-head"><h2>Bureaus</h2><span class="muted">files in the period</span></div>
+    {% if board.bureaus %}
+    <div class="panel-body">{% for b in board.bureaus %}
+      <div class="meter-row"><div class="meter-label"><strong>{{ b.bureau.value | replace('_', ' ') | title }}</strong>
+        <span class="muted">{{ b.files }} file(s) · {{ b.records | num }} records · last {{ b.last | d }}</span></div>
+        <div class="meter"><span style="width: {{ b.share }}%"></span></div></div>
+    {% endfor %}</div>
+    {% else %}<div class="panel-body muted">No files generated in this period.</div>{% endif %}
+  </div>
+</div>
+
+{# ------------------------------------------------ NBFC status #}
+{% if nbfc_status is not none %}
+<div class="panel flush">
+  <div class="panel-head"><h2>NBFC status</h2><span class="muted">latest request of each active NBFC</span></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>NBFC</th><th>Latest request</th><th>As of</th><th>Stage</th><th class="num">Records</th><th>Files</th><th>Last activity</th></tr></thead>
+    <tbody>{% for tenant, r in nbfc_status %}
+      <tr><td>{{ tenant.display_name }}</td>
+      {% if r %}
+        <td class="mono"><a href="{{ url_for('ui.batch', batch_id=r.batch_id) }}">{{ r.batch_id }}</a></td>
+        <td>{{ r.first.as_of_date | d }}</td><td>{{ stage_badge(r.stage) }}</td>
+        <td class="num">{{ r.records | num if r.records }}</td>
+        <td>{{ r.files_done | map(attribute='bureau_code.value') | join(', ') or '—' }}</td>
+        <td>{{ r.last_activity | dt }}</td>
+      {% else %}<td colspan="6" class="muted">No requests yet</td>{% endif %}</tr>
+    {% endfor %}</tbody>
+  </table></div>
+</div>
+{% endif %}
+
+{# ------------------------------------------------ recent #}
+<div class="panel flush">
+  <div class="panel-head"><h2>Recent requests</h2><a href="{{ tracker() }}">All in the tracker</a></div>
+  {% if board.requests %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Request</th><th>NBFC</th><th>As of</th><th>Stage</th><th class="num">Records</th><th class="num">Excluded</th><th>Files</th><th>Requested</th></tr></thead>
+    <tbody>{% for r in board.requests[:10] %}
+      <tr><td class="mono"><a href="{{ url_for('ui.batch', batch_id=r.batch_id) }}">{{ r.batch_id }}</a></td>
+        <td>{{ r.tenant_id }}</td><td>{{ r.first.as_of_date | d }}</td><td>{{ stage_badge(r.stage) }}</td>
+        <td class="num">{{ r.records | num if r.records }}</td><td class="num">{{ r.excluded if r.excluded }}</td>
+        <td>{{ r.files_done | map(attribute='bureau_code.value') | join(', ') or '—' }}</td>
+        <td>{{ r.created_at | dt }} · {{ r.first.requested_by or '—' }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% else %}<div class="panel-body muted">No requests in this period. <a href="{{ url_for('ui.new_run') }}">Create one</a>.</div>{% endif %}
+</div>
+{% endblock %}

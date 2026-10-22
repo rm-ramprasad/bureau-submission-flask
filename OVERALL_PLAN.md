@@ -335,7 +335,7 @@ tests/
   - sidebar navigation (MAIN / REPORTS / ADMIN), top bar with breadcrumb, global NBFC selector (session) and "+ New request";
   - worker status and user in the sidebar footer; restyled components (cards, tables, badges, meters);
   - existing pages moved into the new shell.
-- [ ] K.2 **Dashboard** (§6.3): request-stage KPI cards (raised, awaiting exceptions, in progress, validated-files pending, completed, failed, cancelled) with period filter and click-through; data KPIs; Needs attention; NBFC status; bureaus; recent requests. NBFC-filtered.
+- [x] K.2 **Dashboard** (§6.3; stages in `submissions/requests/stages.py`, tracker stage + period filter from K.3 built with it): request-stage KPI cards (raised, awaiting exceptions, in progress, validated-files pending, completed, failed, cancelled) with period filter and click-through; data KPIs; Needs attention; NBFC status; bureaus; recent requests. NBFC-filtered.
 - [ ] K.3 **Submission tracker:** filters (status, mode, bureau, date range) and paging. **Files** page.
 - [x] K.0 **Validate only:**
   - remove direct GENERATE from the New request form and the scheduler (`--mode`);

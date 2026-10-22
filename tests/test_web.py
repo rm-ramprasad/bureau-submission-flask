@@ -71,8 +71,8 @@ def test_ui_actions_are_audited(client):
     assert "RUN_CREATED" in page and "internal-user" in page and "nbfc_001" in page
 
 
-def test_index_redirects_and_empty_batches(client):
-    assert client.get("/").status_code == 302
+def test_index_is_the_dashboard_and_empty_batches(client):
+    assert "No requests in this period" in client.get("/").get_data(as_text=True)
     page = client.get("/batches").get_data(as_text=True)
     assert "No runs yet" in page
 

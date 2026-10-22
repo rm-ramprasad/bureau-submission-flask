@@ -8,6 +8,14 @@
     <p class="subtitle">Validation runs and generated files{{ ' for ' ~ selected_tenant if selected_tenant else ' across all NBFCs' }}. Times are UTC.</p>
   </div>
 </div>
+<form method="get" class="panel row scope">
+  <div><label for="stage">Requests by stage</label>
+    <select id="stage" name="stage"><option value="">All stages</option>
+      {% for st in stages_all %}<option value="{{ st.value }}">{{ st.label }}</option>{% endfor %}</select></div>
+  <div><label for="period">Period</label>
+    <select id="period" name="period">{% for p in periods %}<option value="{{ p.value }}">{{ p.label }}</option>{% endfor %}</select></div>
+  <div><button type="submit" class="secondary">Show requests</button></div>
+</form>
 <div class="panel flush">
   {% if batches %}
   <div class="table-wrap"><table>

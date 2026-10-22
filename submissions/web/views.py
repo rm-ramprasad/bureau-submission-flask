@@ -18,7 +18,10 @@ from submissions.enums import (
     AdjustmentKind, BatchStatus, OverrideField, ReportingCycle, RequestStatus, RunMode, SnapshotStatus,
     SubmissionType,
 )
+from submissions.db import utcnow
 from submissions.ops import audit
+from submissions.requests import stages
+from submissions.requests.stages import Period, Stage
 from submissions.pipeline import enabled_types
 from submissions.requests import (
     DuplicateActiveRequestError, InvalidTransitionError, RequestNotFoundError, RequestValidationError,
@@ -54,6 +57,26 @@ def _d(value) -> str:
     return value.strftime("%d-%m-%Y") if value else ""
 
 
+@bp.app_template_filter("age")
+def _age(value) -> str:
+    """timedelta -> '3d 4h' / '5h' / '12m'."""
+    if value is None:
+        return ""
+    minutes = int(value.total_seconds() // 60)
+    days, hours = minutes // 1440, minutes % 1440 // 60
+    return f"{days}d {hours}h" if days else (f"{hours}h" if hours else f"{minutes}m")
+
+
+@bp.app_template_filter("pct")
+def _pct(value) -> str:
+    return "—" if value is None else f"{value:.0%}"
+
+
+@bp.app_template_filter("num")
+def _num(value) -> str:
+    return f"{value:,}" if value is not None else ""
+
+
 # ---------------------------------------------------------------- global context: NBFC selector, user
 def selected_tenant() -> str | None:
     """NBFC chosen in the top bar (session). None = all NBFCs."""
@@ -82,15 +105,44 @@ def select_tenant():
 
 
 # ---------------------------------------------------------------- dashboard / tracker
+def _period() -> Period:
+    try:
+        return Period(request.args.get("period") or Period.THIS_MONTH.value)
+    except ValueError:
+        return Period.THIS_MONTH
+
+
 @bp.get("/")
 def dashboard():
-    return redirect(url_for("ui.batches"))          # dashboard page arrives in K.2
+    s = svc()
+    period, tenant_id = _period(), selected_tenant()
+    board = stages.build_dashboard(s.engine, tenant_id, period, utcnow())
+    nbfc_status = None
+    if not tenant_id:                                    # all NBFCs: who has (not) submitted
+        active = s.tenants.list()
+        latest = stages.latest_per_tenant(s.engine, [x.tenant_id for x in active])
+        nbfc_status = [(x, latest.get(x.tenant_id)) for x in active]
+    return render_template("dashboard.html", board=board, period=period, periods=list(Period), Stage=Stage,
+                           nbfc_status=nbfc_status)
 
 
 @bp.get("/batches")
 def batches():
     s = svc()
-    return render_template("batches.html", batches=s.requests.list_batches(limit=100, tenant_id=selected_tenant()))
+    stage_arg, period_arg = request.args.get("stage"), request.args.get("period")
+    if stage_arg or period_arg:                          # request view (dashboard click-through)
+        try:
+            stage = Stage(stage_arg) if stage_arg else None
+        except ValueError:
+            abort(400)
+        period = _period()
+        reqs = stages.load_requests(s.engine, selected_tenant(), period.start(utcnow()))
+        if stage:
+            reqs = [r for r in reqs if r.stage is stage]
+        return render_template("requests.html", reqs=reqs, stage=stage, period=period, periods=list(Period),
+                               stages_all=list(Stage))
+    return render_template("batches.html", batches=s.requests.list_batches(limit=100, tenant_id=selected_tenant()),
+                           periods=list(Period), stages_all=list(Stage))
 
 
 # ---------------------------------------------------------------- new request (always Validate)

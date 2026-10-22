@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Submission tracker · Bureau Submissions{% endblock %}
+{% block crumb %}<a href="{{ url_for('ui.batches') }}">Submission tracker</a> <span>/</span> Requests{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Requests{% if stage %} · {{ stage.label }}{% endif %}</h1>
+    <p class="subtitle">{{ period.label }}{{ ' · ' ~ selected_tenant if selected_tenant else ' · all NBFCs' }}.
+      Each request is one validation and the files generated from it. Times are UTC.</p>
+  </div>
+</div>
+<form method="get" class="panel row scope">
+  <div><label for="stage">Stage</label>
+    <select id="stage" name="stage"><option value="">All stages</option>
+      {% for st in stages_all %}<option value="{{ st.value }}" {{ 'selected' if st == stage }}>{{ st.label }}</option>{% endfor %}</select></div>
+  <div><label for="period">Period</label>
+    <select id="period" name="period">{% for p in periods %}<option value="{{ p.value }}" {{ 'selected' if p == period }}>{{ p.label }}</option>{% endfor %}</select></div>
+  <div><button type="submit" class="secondary">Apply</button> <a href="{{ url_for('ui.batches') }}">All runs</a></div>
+</form>
+<div class="panel flush">
+  {% if reqs %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Request</th><th>NBFC</th><th>As of</th><th>Stage</th><th class="num">Records</th><th class="num">Accepted</th>
+      <th class="num">Excluded</th><th>Files</th><th>Requested</th></tr></thead>
+    <tbody>{% for r in reqs %}
+      <tr><td class="mono"><a href="{{ url_for('ui.batch', batch_id=r.batch_id) }}">{{ r.batch_id }}</a></td>
+        <td>{{ r.tenant_id }}</td><td>{{ r.first.as_of_date | d }}</td>
+        <td><span class="badge s-{{ r.stage.value }}">{{ r.stage.label }}</span></td>
+        <td class="num">{{ r.records | num if r.records }}</td><td class="num">{{ r.accepted | num if r.accepted }}</td>
+        <td class="num">{{ r.excluded if r.excluded }}</td>
+        <td>{{ r.files_done | map(attribute='bureau_code.value') | join(', ') or '—' }}</td>
+        <td>{{ r.created_at | dt }} · {{ r.first.requested_by or '—' }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% else %}<div class="panel-body muted">No requests match.</div>{% endif %}
+</div>
+{% endblock %}
