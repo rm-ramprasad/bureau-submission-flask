@@ -169,3 +169,9 @@ pre.sql { white-space: pre-wrap; font-size: 12px; background: var(--soft); borde
 button.linkish { background: none; border: 0; padding: 0; color: var(--accent-text); font: inherit; font-size: 12.5px; cursor: pointer; }
 button.linkish:hover { text-decoration: underline; filter: none; }
 .rule-form input[type=date], .rule-form input[type=number] { padding: 4px 8px; font-size: 13px; border: 1px solid var(--line); border-radius: 8px; }
+.custom-form fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 4px 14px 12px; margin: 14px 0 0; }
+.custom-form legend { font-weight: 600; padding: 0 6px; }
+.custom-form .row > div { min-width: 140px; }
+.custom-form .grow { flex: 1; }
+.preview { margin-top: 12px; background: var(--soft); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+table.mini { width: auto; margin-top: 8px; } table.mini td, table.mini th { padding: 4px 10px; }

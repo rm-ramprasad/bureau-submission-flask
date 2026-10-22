@@ -6,6 +6,7 @@ from __future__ import annotations
 import itertools
 import logging
 import math
+import re
 from datetime import date, datetime, time, timedelta
 
 from flask import (
@@ -31,6 +32,7 @@ from submissions.requests.stages import Period, Stage
 from submissions.snapshot import SnapshotNotFoundError
 from submissions.storage import StoredFileNotFound
 from submissions.tenants import InactiveTenantError, TenantNotFoundError
+from submissions.validation import custom as custom_rules
 from submissions.validation import parameters as rule_parameters
 from submissions.validation import results, rules
 from submissions.web import WebServices
@@ -518,24 +520,41 @@ def discard_request(batch_id: str):
 
 
 # ---------------------------------------------------------------- admin: rules & policies (per NBFC)
-def _rule_kind(rule) -> str:
+def _rule_kind(rule, custom_defs=None) -> str:
     if rule.source == "CUSTOM":
-        return "Custom SQL"
+        return "Custom (form)" if custom_defs and rule.rule_id in custom_defs else "Custom SQL"
     if rule.rule_id.startswith(("UCRF.REQUIRED.", "UCRF.ENUM.")):
         return "Generated"
     return {"sql": "SQL", "python": "Python", "cascade": "Record decision"}[rule.kind]
 
 
-@bp.get("/rules")
-def rules_page():
-    s = svc()
-    tenant_id = selected_tenant()
+def _rules_type(values) -> SubmissionType:
     try:
-        sub_type = SubmissionType(request.args.get("type") or SubmissionType.CONSUMER.value)
+        sub_type = SubmissionType(values.get("type") or SubmissionType.CONSUMER.value)
     except ValueError:
         abort(400)
     if sub_type not in enabled_types():
         abort(400)
+    return sub_type
+
+
+@bp.get("/rules")
+def rules_page():
+    return _render_rules()
+
+
+def _render_rules(custom_form: dict | None = None, preview: dict | None = None, status: int = 200):
+    s = svc()
+    tenant_id = selected_tenant()
+    sub_type = _rules_type(request.values)
+    custom_defs = custom_rules.definitions(s.engine, tenant_id, sub_type) if tenant_id else {}
+    editing = request.args.get("edit")
+    if custom_form is None and editing in custom_defs:            # Edit: the form pre-filled with the definition
+        d = custom_defs[editing]
+        custom_form = {**d.__dict__, "values": "\n".join(d.values), "when_values": "\n".join(d.when_values),
+                       "field": f"{d.entity}.{d.field}", "editing": editing,
+                       "other_field": f"{d.entity}.{d.other_field}" if d.other_field else "",
+                       "when_field": f"{d.entity}.{d.when_field}" if d.when_field else ""}
     q = (request.args.get("q") or "").strip().lower()
     only_changed = bool(request.args.get("changed"))
     entries = all_entries = rules.catalogue(s.engine, tenant_id or "", sub_type)
@@ -550,9 +569,90 @@ def rules_page():
     return render_template("rules.html", entries=entries, sub_type=sub_type, types=enabled_types(), q=q,
                            parameters=list(definitions.values()), overridden=overridden, values=values,
                            render=lambda m: rule_parameters.render_message(m, values),
-                           only_changed=only_changed, outcomes=list(Outcome), kind=_rule_kind,
+                           only_changed=only_changed, outcomes=list(Outcome),
+                           kind=lambda r: _rule_kind(r, custom_defs), custom_defs=custom_defs,
+                           custom_entries=[e for e in all_entries if e.default.source == "CUSTOM"],
+                           custom_form=custom_form or {}, preview=preview, checks=custom_rules.CHECKS,
+                           operators=custom_rules.OPERATORS, field_options=custom_rules.fields(),
                            tenant=s.tenants.get(tenant_id) if tenant_id else None,
-                           total=len(all_entries), changed_count=sum(e.changed for e in all_entries))
+                           total=len(all_entries), changed_count=sum(e.changed for e in all_entries)), status
+
+
+def _definition_from_form(form) -> custom_rules.Definition:
+    entity, _, field_name = (form.get("field") or "").partition(".")
+    other_entity, _, other = (form.get("other_field") or "").partition(".")
+    when_entity, _, when = (form.get("when_field") or "").partition(".")
+    if other and other_entity != entity:
+        raise custom_rules.CustomRuleError("Compare: pick a field of the same record type")
+    if when and when_entity != entity:
+        raise custom_rules.CustomRuleError("Condition: pick a field of the same record type")
+    return custom_rules.Definition(
+        name=(form.get("name") or "").strip().upper(), entity=entity, field=field_name,
+        check=form.get("check") or "", outcome=form.get("outcome") or "", message=(form.get("message") or "").strip(),
+        values=parse_keys_lines(form.get("values")), min=(form.get("min") or "").strip() or None,
+        max=(form.get("max") or "").strip() or None, pattern=(form.get("pattern") or "").strip() or None,
+        operator=form.get("operator") or None, other_field=other or None, when_field=when or None,
+        when_values=parse_keys_lines(form.get("when_values")))
+
+
+def parse_keys_lines(raw: str | None) -> list[str]:
+    """Values typed one per line or comma-separated (spaces inside a value are kept)."""
+    return [v.strip() for v in re.split(r"[\n,]", raw or "") if v.strip()]
+
+
+@bp.post("/rules/custom")
+def save_custom_rule():
+    """Preview (count on the latest validation; nothing saved) or save a form-built custom rule."""
+    s = svc()
+    tenant_id = selected_tenant()
+    if not tenant_id:
+        flash("Select an NBFC in the top bar: custom rules are per NBFC.", "error")
+        return _rules_back()
+    sub_type = _rules_type(request.form)
+    form = request.form.to_dict()
+    editing = form.get("editing") or None
+    try:
+        d = _definition_from_form(request.form)
+        if editing and d.rule_id(tenant_id) != editing:
+            raise custom_rules.CustomRuleError("The name of an existing rule cannot change; add a new rule instead")
+        rule = custom_rules.build(tenant_id, d)
+        if request.form.get("action") == "preview":
+            snap = s.snapshots.latest(tenant_id, sub_type)
+            if snap is None:
+                return _render_rules(form, {"none": True})
+            count, examples = custom_rules.preview(s.engine, rule, snap.snapshot_id,
+                                                   rule_parameters.load_parameters(s.engine, tenant_id, sub_type))
+            return _render_rules(form, {"count": count, "examples": examples, "snapshot": snap, "sql": rule.sql})
+        reason = (request.form.get("reason") or "").strip()
+        if not reason:
+            raise custom_rules.CustomRuleError("Give a reason for the rule (it is kept in the audit trail)")
+        custom_rules.save(s.engine, tenant_id, sub_type, d, current_user(), replace_existing=bool(editing))
+    except custom_rules.CustomRuleError as exc:
+        flash(str(exc), "error")
+        return _render_rules(form, status=400)
+    audit.record(s.engine, current_user(), "CUSTOM_RULE_CHANGED" if editing else "CUSTOM_RULE_ADDED",
+                 tenant_id=tenant_id, target=rule.rule_id, reason=reason[:500], rule=d.describe(),
+                 outcome=d.outcome, message=d.message)
+    flash(f"{rule.rule_id} {'updated' if editing else 'added'}: {d.describe()}. "
+          "Applies to requests validated from now on.", "ok")
+    return redirect(url_for("ui.rules_page", q=rule.rule_id))
+
+
+@bp.post("/rules/custom/<rule_id>/delete")
+def delete_custom_rule(rule_id: str):
+    s = svc()
+    tenant_id = selected_tenant()
+    if not tenant_id:
+        abort(400)
+    d = custom_rules.definitions(s.engine, tenant_id, _rules_type(request.form)).get(rule_id)
+    if custom_rules.delete_rule(s.engine, tenant_id, rule_id):
+        rules.clear_policy(s.engine, tenant_id, rule_id)
+        audit.record(s.engine, current_user(), "CUSTOM_RULE_DELETED", tenant_id=tenant_id, target=rule_id,
+                     rule=d.describe() if d else None, reason=(request.form.get("reason") or "").strip() or None)
+        flash(f"{rule_id} deleted. Earlier findings keep its id.", "ok")
+    else:
+        abort(404)
+    return redirect(url_for("ui.rules_page"))
 
 
 def _rules_back():

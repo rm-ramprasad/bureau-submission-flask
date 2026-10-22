@@ -29,6 +29,8 @@ validation_rule = Table(
     Column("sql_text", Text, nullable=False),
     Column("is_enabled", Boolean, nullable=False, default=True),
     Column("updated_at", DateTime, nullable=False),
+    Column("definition", Text),                   # migration 009: JSON of a form-built rule (custom.py)
+    Column("created_by", String(100)),
 )
 
 validation_policy = Table(

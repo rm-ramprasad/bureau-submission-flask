@@ -52,6 +52,97 @@
 </div>
 {% endif %}
 
+{% macro field_select(name, selected, empty=None) %}
+  <select name="{{ name }}" id="{{ name }}" {{ '' if empty else 'required' }}>
+    {% if empty %}<option value="">{{ empty }}</option>{% endif %}
+    {% for entity, cols in field_options.items() %}<optgroup label="{{ entity | replace('_', ' ') | title }}">
+      {% for col, typ in cols %}<option value="{{ entity }}.{{ col }}" {{ 'selected' if selected == entity ~ '.' ~ col }}>{{ col }} ({{ typ }})</option>{% endfor %}
+    </optgroup>{% endfor %}
+  </select>
+{% endmacro %}
+
+{% if tenant %}
+<div class="panel flush" id="custom">
+  <div class="panel-head"><h2>Custom rules for {{ tenant.display_name }}</h2>
+    <span class="muted">{{ custom_entries | length }} rule(s) · they run with the UCRF rules and take the same on/off and outcome settings below</span></div>
+  {% if custom_entries %}
+  <div class="table-wrap"><table class="rules">
+    <thead><tr><th>Rule</th><th>Checks</th><th>Outcome</th><th></th></tr></thead>
+    <tbody>{% for e in custom_entries %}{% set d = custom_defs.get(e.default.rule_id) %}
+      <tr class="{{ 'off' if not e.effective.enabled }}">
+        <td class="mono">{{ e.default.rule_id }}<div class="hint">{{ kind(e.default) }}</div></td>
+        <td>{{ d.describe() if d else e.default.message }}<div class="hint">{{ e.default.message if d else '' }}</div></td>
+        <td class="nowrap">{{ labels[e.effective.outcome.value] }}{{ '' if e.effective.enabled else ' · off' }}</td>
+        <td class="nowrap">{% if d %}<a class="button small secondary" href="{{ url_for('ui.rules_page', edit=e.default.rule_id) }}#rule-form">Edit</a>{% endif %}
+          <form method="post" action="{{ url_for('ui.delete_custom_rule', rule_id=e.default.rule_id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="type" value="{{ sub_type.value }}">
+            <button class="small secondary">Delete</button></form></td>
+      </tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+
+  {% set f = custom_form %}
+  <form method="post" action="{{ url_for('ui.save_custom_rule') }}" class="panel-body stack custom-form" id="rule-form">
+    <h2>{{ 'Edit ' ~ f.editing if f.editing else 'Add a custom rule' }}</h2>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="type" value="{{ sub_type.value }}">
+    {% if f.editing %}<input type="hidden" name="editing" value="{{ f.editing }}">{% endif %}
+    <div class="row">
+      <div><label for="name">Name</label>
+        <input type="text" id="name" name="name" value="{{ f.name or '' }}" placeholder="MIN_SANCTION" maxlength="40" required {{ 'readonly' if f.editing }}>
+        <div class="hint">Becomes CUSTOM.{{ tenant.tenant_id | upper }}.&lt;NAME&gt;</div></div>
+      <div><label for="field">Field to check</label>{{ field_select('field', f.field) }}</div>
+      <div><label for="check">Check</label>
+        <select id="check" name="check" required>{% for k, label in checks.items() %}<option value="{{ k }}" {{ 'selected' if k == f.check }}>{{ label }}</option>{% endfor %}</select></div>
+    </div>
+    <fieldset><legend>Check details <span class="muted">(fill in what the chosen check needs)</span></legend>
+      <div class="row">
+        <div><label for="values">Values <span class="muted">· one of / not one of</span></label>
+          <textarea id="values" name="values" rows="2" placeholder="one per line or comma-separated">{{ f['values'] or '' }}</textarea></div>
+        <div><label for="min">Minimum <span class="muted">· between / length</span></label><input type="text" id="min" name="min" value="{{ f.min or '' }}" size="12"></div>
+        <div><label for="max">Maximum</label><input type="text" id="max" name="max" value="{{ f.max or '' }}" size="12"></div>
+        <div><label for="pattern">Pattern <span class="muted">· regular expression</span></label><input type="text" id="pattern" class="mono" name="pattern" value="{{ f.pattern or '' }}" size="22"></div>
+      </div>
+      <div class="row">
+        <div><label for="operator">Compare: must be</label>
+          <select id="operator" name="operator"><option value="">—</option>{% for op, label in operators.items() %}<option value="{{ op }}" {{ 'selected' if op == f.operator }}>{{ label }}</option>{% endfor %}</select></div>
+        <div><label for="other_field">than / to field</label>{{ field_select('other_field', f.other_field, '—') }}</div>
+      </div>
+      <div class="hint">Dates as YYYY-MM-DD. Amounts in rupees. Text checks are exact (case-sensitive).</div>
+    </fieldset>
+    <fieldset><legend>Only when <span class="muted">(optional)</span></legend>
+      <div class="row">
+        <div><label for="when_field">Field</label>{{ field_select('when_field', f.when_field, 'always') }}</div>
+        <div><label for="when_values">is one of</label><textarea id="when_values" name="when_values" rows="2" placeholder="e.g. 05 (personal loan)">{{ f.when_values or '' }}</textarea></div>
+      </div>
+    </fieldset>
+    <div class="row">
+      <div><label for="outcome">Outcome</label>
+        <select id="outcome" name="outcome">{% for o in outcomes %}<option value="{{ o.value }}" {{ 'selected' if o.value == (f.outcome or 'WARN') }}>{{ labels[o.value] }}</option>{% endfor %}</select></div>
+      <div class="grow"><label for="message">Message in findings</label><input type="text" id="message" name="message" value="{{ f.message or '' }}" maxlength="500" required></div>
+    </div>
+    <label for="reason">Reason <span class="muted">(audit trail; needed to save)</span></label>
+    <input type="text" id="reason" name="reason" value="{{ f.reason or '' }}" maxlength="500">
+    <p><button type="submit" name="action" value="preview" class="secondary">Preview on the latest validation</button>
+       <button type="submit" name="action" value="save">{{ 'Save changes' if f.editing else 'Save rule' }}</button>
+       {% if f.editing %}<a href="{{ url_for('ui.rules_page') }}#custom">Cancel</a>{% endif %}</p>
+
+    {% if preview %}
+    <div class="preview">
+      {% if preview.none %}<strong>No validated request yet for this NBFC</strong>: nothing to preview against.
+      {% else %}
+        <strong>{{ preview.count }} finding(s)</strong> in the latest validation (snapshot #{{ preview.snapshot.snapshot_id }},
+        as of {{ preview.snapshot.as_of_date | d }}). Nothing was saved.
+        {% if preview.examples %}<table class="mini"><tr><th>Account</th><th>Customer</th><th>Value</th></tr>
+          {% for x in preview.examples %}<tr><td class="mono">{{ x.account_key or '' }}</td><td class="mono">{{ x.party_key or '' }}</td><td class="mono">{{ x.value if x.value is not none else '' }}</td></tr>{% endfor %}</table>{% endif %}
+        <details><summary class="hint">Generated SQL</summary><pre class="sql">{{ preview.sql }}</pre></details>
+      {% endif %}
+    </div>
+    {% endif %}
+  </form>
+</div>
+{% endif %}
+
 <form method="get" class="panel row scope">
   {% if types | length > 1 %}<div><label for="type">Type</label>
     <select id="type" name="type">{% for t in types %}<option value="{{ t.value }}" {{ 'selected' if t == sub_type }}>{{ t.value | title }}</option>{% endfor %}</select></div>{% endif %}

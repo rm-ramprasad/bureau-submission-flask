@@ -87,13 +87,15 @@ class SnapshotRepository:
                                                t.c.submission_type == str(SubmissionType(submission_type)))).first()
         return Snapshot.from_row(row) if row else None
 
-    def latest(self, tenant_id: str, submission_type: SubmissionType | str, as_of_date: date,
+    def latest(self, tenant_id: str, submission_type: SubmissionType | str, as_of_date: date | None = None,
                status: S = S.VALIDATED) -> Snapshot | None:
-        """Most recent snapshot for this tenant, type and as-of date in the given status."""
+        """Most recent snapshot for this tenant and type (and as-of date, if given) in the given status."""
+        q = select(t).where(t.c.tenant_id == tenant_id, t.c.submission_type == str(SubmissionType(submission_type)),
+                            t.c.status == str(status))
+        if as_of_date is not None:
+            q = q.where(t.c.as_of_date == as_of_date)
         with self.engine.connect() as conn:
-            row = conn.execute(select(t).where(
-                t.c.tenant_id == tenant_id, t.c.submission_type == str(SubmissionType(submission_type)),
-                t.c.as_of_date == as_of_date, t.c.status == str(status)).order_by(t.c.snapshot_id.desc())).first()
+            row = conn.execute(q.order_by(t.c.snapshot_id.desc())).first()
         return Snapshot.from_row(row) if row else None
 
     def list_where(self, statuses: list[S], updated_before: datetime | None = None,

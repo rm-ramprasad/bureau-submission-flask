@@ -355,7 +355,12 @@ tests/
 - [x] K.6 **"Exclude loan" / "Override…" actions** on the Findings page (into the open draft request for the same NBFC, date and type, created on first use; Override opens it pre-filled); adjustments summary on the batch page and Files page; audit filters.
 - [~] K.7 **Rules & policies page built** (22-10-2026; in review): the rule catalogue with what each checks and its SQL / Python check; per NBFC on/off and outcome with a required reason; reset to default; audit `RULE_POLICY_CHANGED` / `RULE_POLICY_RESET`; applies from the next validation. **Rule parameters as data** (migration 008 `validation_parameter`): declared in the pack's `parameters:` (DOB/gender, state/PIN and phone-or-ID cut-off dates, minimum address length, ID patterns for PAN/passport/voter/CKYC/G RAM G), used as `:name` in SQL, via the rule context in Python checks and as `{name}` in messages; per-NBFC overrides on the same page with a reason, audited `RULE_PARAMETER_CHANGED` / `RESET`. Spec-fixed values (DPD cap 900, dates after 01-01-1900, the Aadhaar checksum) stay in code. **Next:** K.8.
 - [ ] K.7 **Admin pages (remaining):** NBFCs & bureau profiles (read-only); Rules & policies (catalogue per NBFC, editable policy overrides with audit).
-- [ ] K.8 Declarative custom rules (compile to SQL) and maintenance in the UI.
+- [x] K.8 **Custom rules without SQL** (`submissions/validation/custom.py`, migration 009 `validation_rule.definition / created_by`):
+  - **Building blocks:** a per-NBFC form on Rules & policies: record type + field; check *required / one of / not one of / between / length / pattern / compare with another field*; optional "only when <field> is one of …"; outcome; message.
+  - **Compiled to SQL:** the same shape as the pack rules, stored with its definition. Fields come from the canonical model only and values are validated and quoted (no SQL injection).
+  - **Preview** counts the findings on the latest validation and saves nothing. Edit, delete, a reason is required, audited `CUSTOM_RULE_ADDED / CHANGED / DELETED`.
+  - **Policy:** custom rules take the same on/off and outcome switches as the UCRF rules.
+  - **MySQL:** uses `REGEXP_LIKE` and `CHAR_LENGTH` (MySQL 8).
 - [ ] K.9 Findings trends across runs (from the kept `validation_summary`).
 - [ ] K.10 Commercial pipeline (needs spec).
 - [ ] K.11 NeSL pipeline (own spec).

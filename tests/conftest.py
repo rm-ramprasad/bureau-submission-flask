@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 
 import pytest
@@ -48,6 +49,9 @@ def sqlite_engine():
         for schema in LMS_SCHEMAS:
             dbapi_conn.execute(f"ATTACH DATABASE ':memory:' AS {schema}")
         dbapi_conn.create_function("CONCAT_WS", -1, _concat_ws)
+        dbapi_conn.create_function("REGEXP_LIKE", 2,                     # MySQL 8 built-ins used by custom rules
+                                   lambda v, p: None if v is None else int(re.search(p, str(v)) is not None))
+        dbapi_conn.create_function("CHAR_LENGTH", 1, lambda v: None if v is None else len(str(v)))
 
     return eng
 
