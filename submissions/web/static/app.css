@@ -168,3 +168,4 @@ label.toggle { display: inline-flex; gap: 4px; align-items: center; font-weight:
 pre.sql { white-space: pre-wrap; font-size: 12px; background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 6px 0 0; }
 button.linkish { background: none; border: 0; padding: 0; color: var(--accent-text); font: inherit; font-size: 12.5px; cursor: pointer; }
 button.linkish:hover { text-decoration: underline; filter: none; }
+.rule-form input[type=date], .rule-form input[type=number] { padding: 4px 8px; font-size: 13px; border: 1px solid var(--line); border-radius: 8px; }

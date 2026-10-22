@@ -31,6 +31,7 @@ from submissions.requests.stages import Period, Stage
 from submissions.snapshot import SnapshotNotFoundError
 from submissions.storage import StoredFileNotFound
 from submissions.tenants import InactiveTenantError, TenantNotFoundError
+from submissions.validation import parameters as rule_parameters
 from submissions.validation import results, rules
 from submissions.web import WebServices
 from submissions.web.auth import current_user
@@ -543,7 +544,12 @@ def rules_page():
                    or q in (e.default.field or "").lower()]
     if only_changed:
         entries = [e for e in entries if e.changed]
+    definitions = rule_parameters.builtin_parameters(sub_type)
+    overridden = rule_parameters.overrides(s.engine, tenant_id, sub_type) if tenant_id else {}
+    values = {n: overridden[n]["value"] if n in overridden else p.default for n, p in definitions.items()}
     return render_template("rules.html", entries=entries, sub_type=sub_type, types=enabled_types(), q=q,
+                           parameters=list(definitions.values()), overridden=overridden, values=values,
+                           render=lambda m: rule_parameters.render_message(m, values),
                            only_changed=only_changed, outcomes=list(Outcome), kind=_rule_kind,
                            tenant=s.tenants.get(tenant_id) if tenant_id else None,
                            total=len(all_entries), changed_count=sum(e.changed for e in all_entries))
@@ -592,6 +598,58 @@ def save_rule_policy(rule_id: str):
                  default={"enabled": entry.default.enabled, "outcome": str(entry.default.outcome)})
     flash(f"{rule_id}: {'on' if enabled else 'off'}, outcome {outcome.value} for {tenant_id}. "
           "Applies to requests validated from now on.", "ok")
+    return _rules_back()
+
+
+@bp.post("/rules/parameters/<name>")
+def save_rule_parameter(name: str):
+    s = svc()
+    tenant_id = selected_tenant()
+    if not tenant_id:
+        flash("Select an NBFC in the top bar: parameters are per NBFC.", "error")
+        return _rules_back()
+    try:
+        sub_type = SubmissionType(request.form.get("type") or SubmissionType.CONSUMER.value)
+    except ValueError:
+        abort(400)
+    param = rule_parameters.builtin_parameters(sub_type).get(name)
+    if param is None:
+        abort(404)
+    before = rule_parameters.load_parameters(s.engine, tenant_id, sub_type)[name]
+    reason = (request.form.get("reason") or "").strip()
+    try:
+        value = param.parse(request.form.get("value"))
+        if value == before:
+            flash(f"{param.label}: nothing changed.", "ok")
+            return _rules_back()
+        if not reason:
+            raise rule_parameters.ParameterError(f"{param.label}: give a reason for the change (kept in the audit trail)")
+        rule_parameters.set_parameter(s.engine, tenant_id, sub_type, name, request.form.get("value"), current_user())
+    except rule_parameters.ParameterError as exc:
+        flash(str(exc), "error")
+        return _rules_back()
+    audit.record(s.engine, current_user(), "RULE_PARAMETER_CHANGED", tenant_id=tenant_id, target=name,
+                 reason=reason[:500], before=param.text(before), after=param.text(value),
+                 default=param.text(param.default), rules=list(param.used_by))
+    flash(f"{param.label} = {param.text(value)} for {tenant_id}. Applies to requests validated from now on.", "ok")
+    return _rules_back()
+
+
+@bp.post("/rules/parameters/<name>/reset")
+def reset_rule_parameter(name: str):
+    s = svc()
+    tenant_id = selected_tenant()
+    if not tenant_id:
+        abort(400)
+    sub_type = SubmissionType(request.form.get("type") or SubmissionType.CONSUMER.value)
+    param = rule_parameters.builtin_parameters(sub_type).get(name)
+    if param is None:
+        abort(404)
+    before = rule_parameters.load_parameters(s.engine, tenant_id, sub_type)[name]
+    if rule_parameters.clear_parameter(s.engine, tenant_id, sub_type, name):
+        audit.record(s.engine, current_user(), "RULE_PARAMETER_RESET", tenant_id=tenant_id, target=name,
+                     before=param.text(before), after=param.text(param.default))
+        flash(f"{param.label}: back to the default ({param.text(param.default)}) for {tenant_id}.", "ok")
     return _rules_back()
 
 

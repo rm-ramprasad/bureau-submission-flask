@@ -33,6 +33,7 @@ class RuleContext:
     conn: Connection
     snapshot_id: int
     as_of_date: date
+    params: dict = field(default_factory=dict)        # rule parameters (pack defaults + tenant overrides)
     _cache: dict = field(default_factory=dict)
 
     def rows(self, entity: str) -> list:
@@ -87,7 +88,7 @@ def name_single_word(ctx):
 @register("id_number_format")
 def id_number_format(ctx):
     for i in ctx.rows("party_identifier"):
-        problem = id_number_problem(i.id_type, i.id_number) if i.id_number else None
+        problem = id_number_problem(i.id_type, i.id_number, ctx.params) if i.id_number else None
         if problem:
             yield PyFinding(i.row_id, i.party_key, value=i.id_number, detail=problem)
 

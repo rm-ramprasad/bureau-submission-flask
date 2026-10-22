@@ -40,6 +40,16 @@ validation_policy = Table(
     Column("updated_at", DateTime, nullable=False),
 )
 
+validation_parameter = Table(                     # migration 008: per-tenant rule parameter overrides
+    "validation_parameter", metadata,
+    Column("tenant_id", String(30), ForeignKey("tenant.tenant_id"), primary_key=True),
+    Column("submission_type", String(20), primary_key=True),
+    Column("name", String(64), primary_key=True),
+    Column("value", String(500), nullable=False),
+    Column("updated_by", String(100), nullable=False),
+    Column("updated_at", DateTime, nullable=False),
+)
+
 validation_finding = Table(
     "validation_finding", metadata,
     Column("finding_id", _PK, primary_key=True, autoincrement=True),

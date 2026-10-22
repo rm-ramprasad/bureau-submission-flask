@@ -7,7 +7,7 @@ results for the snapshot, so a snapshot can be re-validated after a policy chang
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 
 from sqlalchemy import Connection, Engine, delete, func, insert, select, text
@@ -15,12 +15,12 @@ from sqlalchemy import Connection, Engine, delete, func, insert, select, text
 from submissions.canonical.schema import ENTITY_TABLES
 from submissions.enums import Outcome, RecordOutcome, SnapshotStatus
 from submissions.snapshot import SnapshotRepository
+from submissions.validation.parameters import load_parameters, render_message
 from submissions.validation.python_rules import PYTHON_RULES, RuleContext
 from submissions.validation.rules import Rule
 from submissions.validation.tables import record_outcome, validation_finding, validation_summary
 
 QUALIFYING_ID_TYPES = {"01", "02", "03", "04", "05", "06", "09", "10"}
-PHONE_OR_ID_REQUIRED_FROM = date(2007, 6, 1)
 MOBILE = "01"
 SEGMENT_OUTCOMES = {Outcome.REJECT_SEGMENT}
 RECORD_OUTCOMES = {Outcome.REJECT_RECORD}
@@ -48,8 +48,10 @@ class ValidationResult:
     findings: dict[str, int]           # outcome -> count
 
 
-def _params(snapshot_id: int, as_of_date: date) -> dict:
-    return {"snapshot_id": snapshot_id, "as_of_date": as_of_date, "one_year_before": as_of_date - timedelta(days=365)}
+def _params(snapshot_id: int, as_of_date: date, parameters: dict) -> dict:
+    """Bind values for SQL rules: the snapshot, dates, and the rule parameters (:name)."""
+    return {**parameters, "snapshot_id": snapshot_id, "as_of_date": as_of_date,
+            "one_year_before": as_of_date - timedelta(days=365)}
 
 
 def _run_sql_rule(conn: Connection, rule: Rule, params: dict) -> None:
@@ -77,7 +79,7 @@ def _applies(f, account_key: str, party_key: str) -> bool:
     return f.account_key in (None, account_key) and f.party_key in (None, party_key)
 
 
-def _cascade(conn: Connection, snapshot_id: int, rules: dict[str, Rule]) -> tuple[int, int]:
+def _cascade(conn: Connection, snapshot_id: int, rules: dict[str, Rule], parameters: dict) -> tuple[int, int]:
     """Decide ACCEPTED/REJECTED per record (account x holder) and write record_outcome."""
     def rows(entity, *cols):
         t = ENTITY_TABLES[entity]
@@ -122,7 +124,7 @@ def _cascade(conn: Connection, snapshot_id: int, rules: dict[str, Rule]) -> tupl
         valid_phones = [p for p in phones[party_key] if ok("party_phone", p.row_id)]
         checks = [
             ("UCRF.REC.NO_VALID_ADDRESS", not any(ok("party_address", a.row_id) for a in addresses[party_key])),
-            ("UCRF.REC.NO_PHONE_OR_ID", (opened.get(account_key) or date.min) >= PHONE_OR_ID_REQUIRED_FROM
+            ("UCRF.REC.NO_PHONE_OR_ID", (opened.get(account_key) or date.min) >= parameters["phone_or_id_required_from"]
              and not valid_phones and not any(i.id_type in QUALIFYING_ID_TYPES for i in valid_ids)),
             ("UCRF.REC.SINGLE_WORD_NAME", party_key in single_word and not valid_ids
              and not any(p.phone_type == MOBILE for p in valid_phones)),
@@ -153,16 +155,18 @@ def _clear(conn: Connection, snapshot_id: int) -> None:
         conn.execute(delete(t).where(t.c.snapshot_id == snapshot_id))
 
 
-def run_validation(conn: Connection, snapshot_id: int, as_of_date: date, rules: list[Rule]) -> ValidationResult:
+def run_validation(conn: Connection, snapshot_id: int, as_of_date: date, rules: list[Rule],
+                   parameters: dict) -> ValidationResult:
     _clear(conn, snapshot_id)
-    params, ctx = _params(snapshot_id, as_of_date), RuleContext(conn, snapshot_id, as_of_date)
+    rules = [replace(r, message=render_message(r.message, parameters)) for r in rules]   # {parameter} in messages
+    params, ctx = _params(snapshot_id, as_of_date, parameters), RuleContext(conn, snapshot_id, as_of_date, parameters)
     active = [r for r in rules if r.enabled]
     for rule in active:
         if rule.kind == "sql":
             _run_sql_rule(conn, rule, params)
         elif rule.kind == "python":
             _run_python_rule(conn, rule, ctx)
-    accepted, rejected = _cascade(conn, snapshot_id, {r.rule_id: r for r in rules})
+    accepted, rejected = _cascade(conn, snapshot_id, {r.rule_id: r for r in rules}, parameters)
     f = validation_finding.c
     conn.execute(insert(validation_summary).from_select(
         ["snapshot_id", "rule_id", "outcome", "finding_count"],
@@ -189,14 +193,19 @@ def snapshot_result(engine: Engine, snapshot_id: int) -> ValidationResult:
 
 
 def validate_snapshot(engine: Engine, snapshots: SnapshotRepository, snapshot_id: int,
-                      rules: list[Rule]) -> ValidationResult:
-    """Validate an EXTRACTED (or re-validate a VALIDATED) snapshot and mark it VALIDATED."""
+                      rules: list[Rule], parameters: dict | None = None) -> ValidationResult:
+    """Validate an EXTRACTED (or re-validate a VALIDATED) snapshot and mark it VALIDATED.
+
+    `parameters` default to the snapshot tenant's effective rule parameters (pack defaults + overrides).
+    """
     snap = snapshots.get(snapshot_id)
     if snap.status not in (SnapshotStatus.EXTRACTED, SnapshotStatus.VALIDATED):
         raise ValidationError(f"Snapshot {snapshot_id} is {snap.status}; only extracted snapshots can be validated")
+    if parameters is None:
+        parameters = load_parameters(engine, snap.tenant_id, snap.submission_type)
     try:
         with engine.begin() as conn:
-            result = run_validation(conn, snapshot_id, snap.as_of_date, rules)
+            result = run_validation(conn, snapshot_id, snap.as_of_date, rules, parameters)
     except Exception as exc:
         snapshots.mark_failed(snapshot_id, f"validation: {exc}")
         raise

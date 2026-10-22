@@ -36,6 +36,67 @@ generated:
     party_address.state_code: REJECT_SEGMENT
     account_history.asset_classification: REJECT_SEGMENT
 
+# Tunable values used by the rules below, as data (Rules & policies page; per-NBFC overrides in
+# validation_parameter). SQL rules use them as :name, messages as {name}. Values fixed by the UCRF spec
+# (DPD cap 900, earliest date 01-01-1900) are not parameters: the file writer applies them too.
+parameters:
+  - name: dob_gender_required_from
+    type: date
+    default: 2005-05-01
+    label: DOB and gender required from
+    description: Date of birth and gender are required for accounts opened on or after this date.
+    used_by: [UCRF.PN.DOB_REQUIRED, UCRF.PN.GENDER_REQUIRED]
+  - name: state_pin_required_from
+    type: date
+    default: 2006-06-01
+    label: State code and PIN required from
+    description: The address state code and PIN code are required for accounts opened on or after this date.
+    used_by: [UCRF.PA.STATE_REQUIRED, UCRF.PA.PIN_REQUIRED]
+  - name: phone_or_id_required_from
+    type: date
+    default: 2007-06-01
+    label: Phone or ID required from
+    description: Accounts opened on or after this date need a valid telephone or a valid ID to be reported.
+    used_by: [UCRF.REC.NO_PHONE_OR_ID]
+  - name: min_address_length
+    type: int
+    default: 3
+    min: 1
+    max: 40
+    label: Minimum address length
+    description: Shortest acceptable address (all lines together, in characters).
+    used_by: [UCRF.PA.ADDRESS_TOO_SHORT]
+  - name: id_pattern_pan
+    type: regex
+    default: '^[A-Z]{3}[PH][A-Z][0-9]{4}[A-Z]$'
+    label: PAN pattern (ID type 01)
+    description: Regular expression a PAN must match (after removing delimiters, upper case).
+    used_by: [UCRF.ID.NUMBER_FORMAT]
+  - name: id_pattern_passport
+    type: regex
+    default: '^(?=.{7,10}$)[A-Z]{1,2}[0-9]+$'
+    label: Passport pattern (ID type 02)
+    description: 7-10 characters, a letter in position 1 or 2, digits after.
+    used_by: [UCRF.ID.NUMBER_FORMAT]
+  - name: id_pattern_voter
+    type: regex
+    default: '^(?=.{9,}$)[A-Z]{2,3}[A-Z0-9]+$'
+    label: Voter ID pattern (ID type 03)
+    description: At least 9 characters starting with 2-3 letters.
+    used_by: [UCRF.ID.NUMBER_FORMAT]
+  - name: id_pattern_ckyc
+    type: regex
+    default: '^[A-Z0-9]{1,15}$'
+    label: CKYC pattern (ID type 09)
+    description: Up to 15 letters and digits.
+    used_by: [UCRF.ID.NUMBER_FORMAT]
+  - name: id_pattern_gram_g
+    type: regex
+    default: '^[A-Z]{2}-[0-9]{2}-[0-9]{3}-[0-9]{3}-[0-9]{3}/[0-9]{3}[A-Za-z0-9]+$'
+    label: G RAM G pattern (ID type 10)
+    description: SS-DD-BBB-GGG-VVV/HHHSurname (spaces removed, delimiters kept).
+    used_by: [UCRF.ID.NUMBER_FORMAT]
+
 rules:
   # ------------------------------------------------------------------ PN name segment
   - id: UCRF.PN.NAME_DIGITS
@@ -72,24 +133,24 @@ rules:
     entity: party
     field: birth_date
     outcome: REJECT_RECORD
-    message: Date of birth is required for accounts opened on or after 01-05-2005
+    message: Date of birth is required for accounts opened on or after {dob_gender_required_from:%d-%m-%Y}
     sql: |
       SELECT p.row_id, h.account_key, p.party_key, NULL AS value
       FROM c_party p
       JOIN c_account_holder h ON h.snapshot_id = p.snapshot_id AND h.party_key = p.party_key
       JOIN c_account a ON a.snapshot_id = h.snapshot_id AND a.account_key = h.account_key
-      WHERE p.snapshot_id = :snapshot_id AND p.birth_date IS NULL AND a.date_opened >= '2005-05-01'
+      WHERE p.snapshot_id = :snapshot_id AND p.birth_date IS NULL AND a.date_opened >= :dob_gender_required_from
   - id: UCRF.PN.GENDER_REQUIRED
     entity: party
     field: gender
     outcome: REJECT_RECORD
-    message: Gender is required for accounts opened on or after 01-05-2005
+    message: Gender is required for accounts opened on or after {dob_gender_required_from:%d-%m-%Y}
     sql: |
       SELECT p.row_id, h.account_key, p.party_key, NULL AS value
       FROM c_party p
       JOIN c_account_holder h ON h.snapshot_id = p.snapshot_id AND h.party_key = p.party_key
       JOIN c_account a ON a.snapshot_id = h.snapshot_id AND a.account_key = h.account_key
-      WHERE p.snapshot_id = :snapshot_id AND p.gender IS NULL AND a.date_opened >= '2005-05-01'
+      WHERE p.snapshot_id = :snapshot_id AND p.gender IS NULL AND a.date_opened >= :dob_gender_required_from
   - id: UCRF.PN.DOB_OUT_OF_RANGE
     entity: party
     field: birth_date
@@ -190,37 +251,37 @@ rules:
     entity: party_address
     field: address_line_1
     outcome: REJECT_SEGMENT
-    message: Address lines together are shorter than 3 characters
+    message: Address lines together are shorter than {min_address_length} characters
     sql: |
       SELECT x.row_id, NULL AS account_key, x.party_key, x.address_line_1 AS value
       FROM c_party_address x
       WHERE x.snapshot_id = :snapshot_id
         AND LENGTH(TRIM(COALESCE(x.address_line_1, ''))) + LENGTH(TRIM(COALESCE(x.address_line_2, '')))
           + LENGTH(TRIM(COALESCE(x.address_line_3, ''))) + LENGTH(TRIM(COALESCE(x.address_line_4, '')))
-          + LENGTH(TRIM(COALESCE(x.address_line_5, ''))) < 3
+          + LENGTH(TRIM(COALESCE(x.address_line_5, ''))) < :min_address_length
   - id: UCRF.PA.STATE_REQUIRED
     entity: party_address
     field: state_code
     outcome: REJECT_SEGMENT
-    message: State code is required for accounts opened on or after 01-06-2006
+    message: State code is required for accounts opened on or after {state_pin_required_from:%d-%m-%Y}
     sql: |
       SELECT x.row_id, h.account_key, x.party_key, NULL AS value
       FROM c_party_address x
       JOIN c_account_holder h ON h.snapshot_id = x.snapshot_id AND h.party_key = x.party_key
       JOIN c_account a ON a.snapshot_id = h.snapshot_id AND a.account_key = h.account_key
-      WHERE x.snapshot_id = :snapshot_id AND x.state_code IS NULL AND a.date_opened >= '2006-06-01'
+      WHERE x.snapshot_id = :snapshot_id AND x.state_code IS NULL AND a.date_opened >= :state_pin_required_from
   - id: UCRF.PA.PIN_REQUIRED
     entity: party_address
     field: pin_code
     outcome: REJECT_SEGMENT
-    message: PIN code is required for accounts opened on or after 01-06-2006
+    message: PIN code is required for accounts opened on or after {state_pin_required_from:%d-%m-%Y}
     sql: |
       SELECT x.row_id, h.account_key, x.party_key, NULL AS value
       FROM c_party_address x
       JOIN c_account_holder h ON h.snapshot_id = x.snapshot_id AND h.party_key = x.party_key
       JOIN c_account a ON a.snapshot_id = h.snapshot_id AND a.account_key = h.account_key
       WHERE x.snapshot_id = :snapshot_id AND (x.pin_code IS NULL OR TRIM(x.pin_code) = '')
-        AND COALESCE(x.state_code, '') <> '77' AND a.date_opened >= '2006-06-01'
+        AND COALESCE(x.state_code, '') <> '77' AND a.date_opened >= :state_pin_required_from
   - id: UCRF.PA.PIN_FORMAT
     entity: party_address
     field: pin_code
@@ -577,7 +638,7 @@ rules:
   - id: UCRF.REC.NO_PHONE_OR_ID
     entity: account_holder
     outcome: REJECT_RECORD
-    message: Accounts opened on or after 01-06-2007 need a valid telephone or a valid ID (types 01-06, 09, 10)
+    message: Accounts opened on or after {phone_or_id_required_from:%d-%m-%Y} need a valid telephone or a valid ID (types 01-06, 09, 10)
     cascade: true
   - id: UCRF.REC.SINGLE_WORD_NAME
     entity: account_holder

@@ -16,6 +16,42 @@
 <div class="flash error">Select an NBFC in the top bar to change its rule settings. Showing the defaults.</div>
 {% endif %}
 
+{% if parameters %}
+<div class="panel flush">
+  <div class="panel-head"><h2>Rule parameters</h2>
+    <span class="muted">Values the rules use. Spec-fixed values (DPD cap 900, dates after 01-01-1900) are not editable.</span></div>
+  <div class="table-wrap"><table class="rules">
+    <thead><tr><th>Parameter</th><th>Used by</th><th>Default</th><th>{{ 'This NBFC' if tenant else 'Value' }}</th></tr></thead>
+    <tbody>{% for p in parameters %}
+      {% set o = overridden.get(p.name) %}
+      <tr class="{{ 'changed' if o }}">
+        <td><strong>{{ p.label }}</strong><div class="hint">{{ p.description }}</div><div class="hint mono">{{ p.name }}</div></td>
+        <td class="mono hint">{% for r in p.used_by %}<a href="{{ url_for('ui.rules_page', q=r) }}">{{ r }}</a><br>{% endfor %}</td>
+        <td class="mono nowrap">{{ p.default | d if p.type == 'date' else p.default }}</td>
+        <td>
+          {% if tenant %}
+          <form method="post" action="{{ url_for('ui.save_rule_parameter', name=p.name) }}" class="rule-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="type" value="{{ sub_type.value }}">
+            <input type="hidden" name="next" value="{{ request.full_path }}">
+            {% if p.type == 'date' %}<input type="date" name="value" value="{{ values[p.name].isoformat() }}" required>
+            {% elif p.type == 'int' %}<input type="number" name="value" value="{{ values[p.name] }}" min="{{ p.min }}" max="{{ p.max }}" required>
+            {% else %}<input type="text" class="mono" name="value" value="{{ values[p.name] }}" size="34" maxlength="300" required>{% endif %}
+            <input type="text" name="reason" placeholder="Reason for the change" maxlength="500" size="22">
+            <button class="small">Save</button>
+          </form>
+          {% if o %}<div class="hint">Changed by {{ o.updated_by }} {{ o.updated_at | dt }} ·
+            <a href="{{ url_for('ui.audit_log', target=p.name) }}">history</a> ·
+            <form method="post" action="{{ url_for('ui.reset_rule_parameter', name=p.name) }}" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="type" value="{{ sub_type.value }}">
+              <input type="hidden" name="next" value="{{ request.full_path }}"><button class="linkish">reset to default</button></form></div>{% endif %}
+          {% else %}<span class="mono">{{ values[p.name] | d if p.type == 'date' else values[p.name] }}</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}</tbody>
+  </table></div>
+</div>
+{% endif %}
+
 <form method="get" class="panel row scope">
   {% if types | length > 1 %}<div><label for="type">Type</label>
     <select id="type" name="type">{% for t in types %}<option value="{{ t.value }}" {{ 'selected' if t == sub_type }}>{{ t.value | title }}</option>{% endfor %}</select></div>{% endif %}
@@ -34,7 +70,7 @@
       {% set r, d = e.effective, e.default %}
       <tr class="{{ 'changed' if e.changed }} {{ 'off' if not r.enabled }}">
         <td class="mono">{{ d.rule_id }}<div class="hint">{{ d.segment or '' }}{{ ' · ' ~ d.field if d.field }} · {{ kind(d) }}</div></td>
-        <td>{{ d.message }}
+        <td>{{ render(d.message) }}
           {% if d.sql or d.python %}<details><summary class="hint">{{ 'SQL' if d.sql else 'Python check' }}</summary>
             {% if d.sql %}<pre class="sql">{{ d.sql }}</pre>{% else %}<p class="hint mono">submissions/validation/python_rules.py · {{ d.python }}</p>{% endif %}
           </details>{% endif %}</td>
