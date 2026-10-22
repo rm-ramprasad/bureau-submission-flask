@@ -46,7 +46,8 @@
       {{ nav('ui.files', 'Files', 'files') }}
       {{ nav('ui.audit_log', 'Audit', 'audit') }}
       <div class="nav-group">Admin</div>
-      {{ nav('ui.admin', 'NBFCs & rules', 'admin', soon=true) }}
+      {{ nav('ui.rules_page', 'Rules & policies', 'admin') }}
+      {{ nav('ui.admin', 'NBFCs & bureaus', 'admin', soon=true) }}
     </nav>
     <div class="sidebar-foot">
       <div class="worker {{ 'ok' if worker_alive else 'down' }}">

@@ -19,7 +19,7 @@ from submissions.adjustments import (
 from submissions.canonical.schema import ENTITY_TABLES
 from submissions.db import utcnow
 from submissions.enums import (
-    AdjustmentKind, BatchStatus, BureauCode, OverrideField, ReportingCycle, RequestStatus, RunMode, SnapshotStatus,
+    AdjustmentKind, BatchStatus, BureauCode, Outcome, OverrideField, ReportingCycle, RequestStatus, RunMode, SnapshotStatus,
     SubmissionType,
 )
 from submissions.ops import audit
@@ -31,7 +31,7 @@ from submissions.requests.stages import Period, Stage
 from submissions.snapshot import SnapshotNotFoundError
 from submissions.storage import StoredFileNotFound
 from submissions.tenants import InactiveTenantError, TenantNotFoundError
-from submissions.validation import results
+from submissions.validation import results, rules
 from submissions.web import WebServices
 from submissions.web.auth import current_user
 
@@ -514,6 +514,100 @@ def discard_request(batch_id: str):
                  batch_id=batch_id, draft=True)
     flash(f"Draft request {batch_id} discarded.", "ok")
     return redirect(url_for("ui.exceptions"))
+
+
+# ---------------------------------------------------------------- admin: rules & policies (per NBFC)
+def _rule_kind(rule) -> str:
+    if rule.source == "CUSTOM":
+        return "Custom SQL"
+    if rule.rule_id.startswith(("UCRF.REQUIRED.", "UCRF.ENUM.")):
+        return "Generated"
+    return {"sql": "SQL", "python": "Python", "cascade": "Record decision"}[rule.kind]
+
+
+@bp.get("/rules")
+def rules_page():
+    s = svc()
+    tenant_id = selected_tenant()
+    try:
+        sub_type = SubmissionType(request.args.get("type") or SubmissionType.CONSUMER.value)
+    except ValueError:
+        abort(400)
+    if sub_type not in enabled_types():
+        abort(400)
+    q = (request.args.get("q") or "").strip().lower()
+    only_changed = bool(request.args.get("changed"))
+    entries = all_entries = rules.catalogue(s.engine, tenant_id or "", sub_type)
+    if q:
+        entries = [e for e in entries if q in e.default.rule_id.lower() or q in e.default.message.lower()
+                   or q in (e.default.field or "").lower()]
+    if only_changed:
+        entries = [e for e in entries if e.changed]
+    return render_template("rules.html", entries=entries, sub_type=sub_type, types=enabled_types(), q=q,
+                           only_changed=only_changed, outcomes=list(Outcome), kind=_rule_kind,
+                           tenant=s.tenants.get(tenant_id) if tenant_id else None,
+                           total=len(all_entries), changed_count=sum(e.changed for e in all_entries))
+
+
+def _rules_back():
+    target = request.form.get("next", "")
+    return redirect(target if target.startswith("/") and not target.startswith("//") else url_for("ui.rules_page"))
+
+
+@bp.post("/rules/<rule_id>")
+def save_rule_policy(rule_id: str):
+    s = svc()
+    tenant_id = selected_tenant()
+    if not tenant_id:
+        flash("Select an NBFC in the top bar: rule settings are per NBFC.", "error")
+        return _rules_back()
+    try:
+        sub_type = SubmissionType(request.form.get("type") or SubmissionType.CONSUMER.value)
+    except ValueError:
+        abort(400)
+    entry = next((e for e in rules.catalogue(s.engine, tenant_id, sub_type) if e.default.rule_id == rule_id), None)
+    if entry is None:
+        abort(404)
+    enabled = request.form.get("enabled") == "1"
+    try:
+        outcome = Outcome(request.form.get("outcome") or entry.default.outcome.value)
+    except ValueError:
+        abort(400)
+    reason = (request.form.get("reason") or "").strip()
+    if (enabled, outcome) == (entry.effective.enabled, entry.effective.outcome):
+        flash(f"{rule_id}: nothing changed.", "ok")
+        return _rules_back()
+    if not reason:
+        flash(f"{rule_id}: give a reason for the change (it is kept in the audit trail).", "error")
+        return _rules_back()
+    if (enabled, outcome) == (entry.default.enabled, entry.default.outcome):
+        rules.clear_policy(s.engine, tenant_id, rule_id)             # back to the default: no override row
+    else:
+        rules.set_policy(s.engine, tenant_id, rule_id,
+                         is_enabled=None if enabled == entry.default.enabled else enabled,
+                         outcome=None if outcome == entry.default.outcome else outcome)
+    audit.record(s.engine, current_user(), "RULE_POLICY_CHANGED", tenant_id=tenant_id, target=rule_id,
+                 reason=reason[:500], before={"enabled": entry.effective.enabled, "outcome": str(entry.effective.outcome)},
+                 after={"enabled": enabled, "outcome": str(outcome)},
+                 default={"enabled": entry.default.enabled, "outcome": str(entry.default.outcome)})
+    flash(f"{rule_id}: {'on' if enabled else 'off'}, outcome {outcome.value} for {tenant_id}. "
+          "Applies to requests validated from now on.", "ok")
+    return _rules_back()
+
+
+@bp.post("/rules/<rule_id>/reset")
+def reset_rule_policy(rule_id: str):
+    s = svc()
+    tenant_id = selected_tenant()
+    if not tenant_id:
+        abort(400)
+    before = rules.policies(s.engine, tenant_id).get(rule_id)
+    if rules.clear_policy(s.engine, tenant_id, rule_id):
+        audit.record(s.engine, current_user(), "RULE_POLICY_RESET", tenant_id=tenant_id, target=rule_id,
+                     before={"enabled": before["is_enabled"], "outcome": before["outcome"]},
+                     reason=(request.form.get("reason") or "").strip()[:500] or None)
+        flash(f"{rule_id}: back to the default for {tenant_id}.", "ok")
+    return _rules_back()
 
 
 @bp.get("/audit")

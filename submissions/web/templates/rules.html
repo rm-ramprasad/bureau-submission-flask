@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Rules & policies · Bureau Submissions{% endblock %}
+{% block crumb %}Rules &amp; policies{% endblock %}
+{% set labels = {'WARN': 'Warn only', 'REJECT_FIELD': 'Drop field', 'REJECT_SEGMENT': 'Drop segment',
+                 'REJECT_RECORD': 'Reject record', 'REJECT_FILE': 'Block file'} %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Rules &amp; policies{% if tenant %} · {{ tenant.display_name }}{% endif %}</h1>
+    <p class="subtitle">The validation rules ({{ total }}) for {{ sub_type.value | title }} submissions. The UCRF rules come with the
+      app; each NBFC can switch a rule off or change its outcome. Changes apply to requests validated from then on and are audited.</p>
+  </div>
+</div>
+
+{% if not tenant %}
+<div class="flash error">Select an NBFC in the top bar to change its rule settings. Showing the defaults.</div>
+{% endif %}
+
+<form method="get" class="panel row scope">
+  {% if types | length > 1 %}<div><label for="type">Type</label>
+    <select id="type" name="type">{% for t in types %}<option value="{{ t.value }}" {{ 'selected' if t == sub_type }}>{{ t.value | title }}</option>{% endfor %}</select></div>{% endif %}
+  <div><label for="q">Search</label><input type="text" id="q" name="q" value="{{ q }}" size="28" placeholder="rule id, field or text"></div>
+  <div class="choices"><label><input type="checkbox" name="changed" value="1" {{ 'checked' if only_changed }}>
+    Only changed for this NBFC ({{ changed_count }})</label></div>
+  <div><button type="submit" class="secondary">Filter</button>{% if q or only_changed %} <a href="{{ url_for('ui.rules_page') }}">Clear</a>{% endif %}</div>
+</form>
+
+<div class="panel flush">
+  <div class="panel-head"><h2>{{ entries | length }} rule(s)</h2>
+    <span class="muted">Outcomes: Warn only · Drop field · Drop segment · Reject record · Block file</span></div>
+  <div class="table-wrap"><table class="rules">
+    <thead><tr><th>Rule</th><th>What it checks</th><th>Default</th><th>{{ 'This NBFC' if tenant else 'Setting' }}</th></tr></thead>
+    <tbody>{% for e in entries %}
+      {% set r, d = e.effective, e.default %}
+      <tr class="{{ 'changed' if e.changed }} {{ 'off' if not r.enabled }}">
+        <td class="mono">{{ d.rule_id }}<div class="hint">{{ d.segment or '' }}{{ ' · ' ~ d.field if d.field }} · {{ kind(d) }}</div></td>
+        <td>{{ d.message }}
+          {% if d.sql or d.python %}<details><summary class="hint">{{ 'SQL' if d.sql else 'Python check' }}</summary>
+            {% if d.sql %}<pre class="sql">{{ d.sql }}</pre>{% else %}<p class="hint mono">submissions/validation/python_rules.py · {{ d.python }}</p>{% endif %}
+          </details>{% endif %}</td>
+        <td class="nowrap">{{ labels[d.outcome.value] }}{% if not d.enabled %}<div class="hint">off by default</div>{% endif %}</td>
+        <td>
+          {% if tenant %}
+          <form method="post" action="{{ url_for('ui.save_rule_policy', rule_id=d.rule_id) }}" class="rule-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="type" value="{{ sub_type.value }}">
+            <input type="hidden" name="next" value="{{ request.full_path }}">
+            <label class="toggle"><input type="checkbox" name="enabled" value="1" {{ 'checked' if r.enabled }}> On</label>
+            <select name="outcome" aria-label="Outcome">{% for o in outcomes %}<option value="{{ o.value }}" {{ 'selected' if o == r.outcome }}>{{ labels[o.value] }}</option>{% endfor %}</select>
+            <input type="text" name="reason" placeholder="Reason for the change" maxlength="500" size="22">
+            <button class="small">Save</button>
+          </form>
+          {% if e.changed %}
+          <div class="hint">Changed{% if e.policy and e.policy.updated_at %} {{ e.policy.updated_at | dt }}{% endif %} ·
+            <a href="{{ url_for('ui.audit_log', target=d.rule_id) }}">history</a> ·
+            <form method="post" action="{{ url_for('ui.reset_rule_policy', rule_id=d.rule_id) }}" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.full_path }}">
+              <button class="linkish">reset to default</button></form></div>
+          {% endif %}
+          {% else %}{{ 'On' if r.enabled else 'Off' }} · {{ labels[r.outcome.value] }}{% endif %}
+        </td>
+      </tr>
+    {% else %}<tr><td colspan="4" class="muted">No rules match.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</div>
+{% endblock %}

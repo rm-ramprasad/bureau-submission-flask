@@ -7,7 +7,7 @@ from functools import cache
 from pathlib import Path
 
 import yaml
-from sqlalchemy import Engine, select, update
+from sqlalchemy import Engine, delete, select, update
 
 from submissions.canonical.definition import canonical_model
 from submissions.db import utcnow
@@ -145,22 +145,59 @@ def set_policy(engine: Engine, tenant_id: str, rule_id: str, *, is_enabled: bool
             conn.execute(t.insert().values(tenant_id=tenant_id, rule_id=rule_id, **values))
 
 
-def load_rule_set(engine: Engine, tenant_id: str, submission_type: SubmissionType | str) -> list[Rule]:
-    """Built-in + tenant custom rules, with the tenant's policy applied. Disabled rules are included (enabled=False)."""
+def clear_policy(engine: Engine, tenant_id: str, rule_id: str) -> bool:
+    """Back to the rule's own settings for this tenant. True if there was an override."""
+    t = validation_policy
+    with engine.begin() as conn:
+        return conn.execute(delete(t).where(t.c.tenant_id == tenant_id, t.c.rule_id == rule_id)).rowcount > 0
+
+
+def policies(engine: Engine, tenant_id: str) -> dict[str, dict]:
+    """rule_id -> {is_enabled, outcome, updated_at} overrides of one tenant."""
+    t = validation_policy
+    with engine.connect() as conn:
+        return {r.rule_id: dict(is_enabled=r.is_enabled, outcome=r.outcome, updated_at=r.updated_at)
+                for r in conn.execute(select(t).where(t.c.tenant_id == tenant_id))}
+
+
+def _own_rules(engine: Engine, tenant_id: str, submission_type: SubmissionType | str) -> list[Rule]:
+    """Built-in + tenant custom rules with their own settings (no policy applied)."""
     rules = list(builtin_rules(submission_type))
     with engine.connect() as conn:
         custom = conn.execute(select(validation_rule).where(
             validation_rule.c.tenant_id == tenant_id,
             validation_rule.c.submission_type == str(SubmissionType(submission_type)))).all()
-        policy = {p.rule_id: p for p in conn.execute(select(validation_policy).where(
-            validation_policy.c.tenant_id == tenant_id))}
-    rules += [Rule(rule_id=r.rule_id, source="CUSTOM", entity=r.entity, outcome=Outcome(r.outcome), message=r.message,
-                   segment=r.segment, field=r.field, sql=r.sql_text, enabled=bool(r.is_enabled)) for r in custom]
-    result = []
-    for rule in rules:
-        p = policy.get(rule.rule_id)
-        if p is not None:
-            rule = replace(rule, enabled=rule.enabled if p.is_enabled is None else bool(p.is_enabled),
-                           outcome=Outcome(p.outcome) if p.outcome else rule.outcome)
-        result.append(rule)
-    return result
+    return rules + [Rule(rule_id=r.rule_id, source="CUSTOM", entity=r.entity, outcome=Outcome(r.outcome),
+                         message=r.message, segment=r.segment, field=r.field, sql=r.sql_text,
+                         enabled=bool(r.is_enabled)) for r in custom]
+
+
+def _apply(rule: Rule, p) -> Rule:
+    if p is None:
+        return rule
+    return replace(rule, enabled=rule.enabled if p["is_enabled"] is None else bool(p["is_enabled"]),
+                   outcome=Outcome(p["outcome"]) if p["outcome"] else rule.outcome)
+
+
+@dataclass(frozen=True)
+class CatalogueEntry:
+    default: Rule                     # the rule's own settings
+    effective: Rule                   # with this tenant's policy applied
+    policy: dict | None               # the tenant's override, if any
+
+    @property
+    def changed(self) -> bool:
+        return (self.default.enabled, self.default.outcome) != (self.effective.enabled, self.effective.outcome)
+
+
+def catalogue(engine: Engine, tenant_id: str, submission_type: SubmissionType | str) -> list[CatalogueEntry]:
+    """Every rule for this tenant and type, with its default and effective settings (Rules & policies page)."""
+    pol = policies(engine, tenant_id)
+    return [CatalogueEntry(r, _apply(r, pol.get(r.rule_id)), pol.get(r.rule_id))
+            for r in _own_rules(engine, tenant_id, submission_type)]
+
+
+def load_rule_set(engine: Engine, tenant_id: str, submission_type: SubmissionType | str) -> list[Rule]:
+    """Built-in + tenant custom rules, with the tenant's policy applied. Disabled rules are included (enabled=False)."""
+    pol = policies(engine, tenant_id)
+    return [_apply(r, pol.get(r.rule_id)) for r in _own_rules(engine, tenant_id, submission_type)]

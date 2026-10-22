@@ -158,3 +158,13 @@ a.kpi:hover { text-decoration: none; border-color: var(--accent); }
 .meter { height: 8px; background: var(--soft); border-radius: 999px; overflow: hidden; }
 .meter span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
 .nowrap { white-space: nowrap; }
+
+/* Rules & policies */
+table.rules tr.changed td { background: var(--accent-soft); }
+table.rules tr.off td:not(:last-child) { color: var(--muted); }
+.rule-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.rule-form select, .rule-form input[type=text] { padding: 4px 8px; font-size: 13px; }
+label.toggle { display: inline-flex; gap: 4px; align-items: center; font-weight: 500; margin: 0; }
+pre.sql { white-space: pre-wrap; font-size: 12px; background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 6px 0 0; }
+button.linkish { background: none; border: 0; padding: 0; color: var(--accent-text); font: inherit; font-size: 12.5px; cursor: pointer; }
+button.linkish:hover { text-decoration: underline; filter: none; }
