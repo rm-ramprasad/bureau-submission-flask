@@ -5,15 +5,25 @@
 <div class="page-head">
   <div>
     <h1>Audit trail</h1>
-    <p class="subtitle">Who did what{{ ' for ' ~ selected_tenant if selected_tenant else '' }}. Latest 200 events, UTC.</p>
+    <p class="subtitle">Who did what{{ ' for ' ~ selected_tenant if selected_tenant else '' }}. Latest 200 matching events, UTC.</p>
   </div>
 </div>
+<form method="get" class="panel row scope">
+  <div><label for="action">Action</label>
+    <select id="action" name="action"><option value="">All</option>
+      {% for a in actions %}<option {{ 'selected' if a == flt.action }}>{{ a }}</option>{% endfor %}</select></div>
+  <div><label for="actor">User</label>
+    <select id="actor" name="actor"><option value="">All</option>
+      {% for a in actors %}<option {{ 'selected' if a == flt.actor }}>{{ a }}</option>{% endfor %}</select></div>
+  <div><label for="target">Request / target</label><input type="text" id="target" name="target" value="{{ flt.target }}" size="24"></div>
+  <div><button type="submit" class="secondary">Filter</button>{% if flt.values() | select | list %} <a href="{{ url_for('ui.audit_log') }}">Clear</a>{% endif %}</div>
+</form>
 <div class="panel flush">
   <div class="table-wrap"><table>
     <thead><tr><th>When</th><th>Who</th><th>Action</th><th>NBFC</th><th>Target</th><th>Details</th></tr></thead>
     <tbody>{% for e in events %}
       <tr><td>{{ e.occurred_at | dt }}</td><td>{{ e.actor }}</td><td class="mono">{{ e.action }}</td>
-          <td>{{ e.tenant_id or '' }}</td><td class="mono">{{ e.target or '' }}</td><td class="mono muted">{{ e.details or '' }}</td></tr>
+          <td>{{ e.tenant_id or '' }}</td><td class="mono">{% if e.target %}<a href="{{ url_for('ui.audit_log', target=e.target) }}">{{ e.target }}</a>{% endif %}</td><td class="mono muted">{{ e.details or '' }}</td></tr>
     {% else %}<tr><td colspan="6" class="muted">No events yet.</td></tr>{% endfor %}</tbody>
   </table></div>
 </div>

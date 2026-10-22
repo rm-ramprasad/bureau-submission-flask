@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Files · Bureau Submissions{% endblock %}
+{% block crumb %}Files{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Files</h1>
+    <p class="subtitle">Generated bureau files{{ ' for ' ~ selected_tenant if selected_tenant else ' across all NBFCs' }}, newest first.
+      Stored in <span class="mono">{{ store }}</span>. Times are UTC.</p>
+  </div>
+</div>
+<form method="get" class="panel row scope">
+  <div><label for="bureau">Bureau</label>
+    <select id="bureau" name="bureau"><option value="">All</option>
+      {% for b in bureaus %}<option value="{{ b.value }}" {{ 'selected' if b == bureau }}>{{ b.value | replace('_', ' ') | title }}</option>{% endfor %}</select></div>
+  <div><label for="period">Generated</label>
+    <select id="period" name="period">{% for p in periods %}<option value="{{ p.value }}" {{ 'selected' if p == period }}>{{ p.label }}</option>{% endfor %}</select></div>
+  <div><button type="submit" class="secondary">Filter</button></div>
+</form>
+<div class="panel flush">
+  <div class="panel-head"><h2>{{ total }} file(s)</h2>{% if pages > 1 %}<span class="muted">page {{ page }} of {{ pages }}</span>{% endif %}</div>
+  {% if rows %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Generated</th><th>NBFC</th><th>Bureau</th><th>File</th><th>As of</th><th class="num">Records written</th>
+      <th class="num">Rejected</th><th class="num">Excluded</th><th class="num">Overridden</th><th>Download</th></tr></thead>
+    <tbody>{% for f in rows %}
+      <tr><td>{{ f.finished_at | dt }}<div class="hint">{{ f.requested_by or '' }}</div></td>
+        <td>{{ f.tenant_id }}</td><td>{{ f.bureau_code.value | replace('_', ' ') | title }}</td>
+        <td class="mono"><a href="{{ url_for('ui.batch', batch_id=f.batch_id) }}">{{ f.output_file_name }}</a>
+          {% if f.output_file_path %}<div class="hint">{{ f.output_file_path }}</div>{% endif %}</td>
+        <td>{{ f.as_of_date | d }}</td>
+        <td class="num">{{ f.accepted_records | num }}</td><td class="num">{{ f.rejected_records or 0 }}</td>
+        <td class="num">{{ f.excluded_accounts or 0 }}</td><td class="num">{{ f.overridden_accounts or 0 }}</td>
+        <td>{% if f.output_file_path %}<a href="{{ url_for('ui.download', request_id=f.request_id, kind='file') }}">File</a>
+            {% if f.exceptions_file_path %} · <a href="{{ url_for('ui.download', request_id=f.request_id, kind='exceptions') }}">Exceptions</a>{% endif %}
+            {% else %}<span class="badge b-PURGED">Purged</span>{% endif %}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% else %}<div class="panel-body muted">No files generated{{ ' in this period' if period.value != 'all' }}.</div>{% endif %}
+</div>
+{% if pages > 1 %}
+<div class="pager">
+  {% set args = request.args.to_dict() %}
+  {% if page > 1 %}{% set _ = args.update(page=page - 1) %}<a href="{{ url_for('ui.files', **args) }}">Previous</a>{% endif %}
+  <span class="muted">Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}{% set _ = args.update(page=page + 1) %}<a href="{{ url_for('ui.files', **args) }}">Next</a>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

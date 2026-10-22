@@ -41,14 +41,26 @@
 </form>
 
 <div class="panel flush">
-  <div class="panel-head"><h2>Findings ({{ total }})</h2></div>
+  <div class="panel-head"><h2>Findings ({{ total }})</h2>
+    {% if snap.status.value == 'VALIDATED' %}<span class="muted">This validation is locked: Exclude / Override add the exception to a new draft request for {{ snap.as_of_date | d }}.</span>{% endif %}</div>
   <div class="table-wrap"><table>
-    <thead><tr><th>Account</th><th>Customer</th><th>Rule</th><th>Outcome</th><th>Segment / field</th><th>Value</th><th>Message</th></tr></thead>
+    {% set can_adjust = snap.status.value == 'VALIDATED' %}
+    <thead><tr><th>Account</th><th>Customer</th><th>Rule</th><th>Outcome</th><th>Segment / field</th><th>Value</th><th>Message</th>
+      {% if can_adjust %}<th title="Adds the exception to a new draft request for this date">Exception</th>{% endif %}</tr></thead>
     <tbody>{% for f in rows %}
       <tr><td class="mono">{{ f.account_key or '' }}</td><td class="mono">{{ f.party_key or '' }}</td>
           <td class="mono">{{ f.rule_id }}</td><td><span class="badge b-{{ f.outcome }}">{{ f.outcome }}</span></td>
-          <td>{{ f.segment or '' }}{{ ' · ' ~ f.field if f.field }}</td><td class="mono">{{ f.value or '' }}</td><td>{{ f.message }}</td></tr>
-    {% else %}<tr><td colspan="7" class="muted">No findings match.</td></tr>{% endfor %}</tbody>
+          <td>{{ f.segment or '' }}{{ ' · ' ~ f.field if f.field }}</td><td class="mono">{{ f.value or '' }}</td><td>{{ f.message }}</td>
+          {% if can_adjust %}<td class="nowrap">{% if f.account_key %}
+            <form method="post" action="{{ url_for('ui.exclude_from_findings', snapshot_id=snap.snapshot_id) }}" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="account_key" value="{{ f.account_key }}">
+              <input type="hidden" name="next" value="{{ request.full_path }}"><button class="small secondary">Exclude loan</button></form>
+            <form method="post" action="{{ url_for('ui.override_from_findings', snapshot_id=snap.snapshot_id) }}" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="account_key" value="{{ f.account_key }}">
+              {% if f.field in overridable %}<input type="hidden" name="field" value="{{ f.field }}">{% endif %}
+              <button class="small secondary">Override…</button></form>
+          {% endif %}</td>{% endif %}</tr>
+    {% else %}<tr><td colspan="8" class="muted">No findings match.</td></tr>{% endfor %}</tbody>
   </table></div>
 </div>
 {% if pages > 1 %}

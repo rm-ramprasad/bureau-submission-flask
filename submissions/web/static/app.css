@@ -157,3 +157,4 @@ a.kpi:hover { text-decoration: none; border-color: var(--accent); }
 .meter-label { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
 .meter { height: 8px; background: var(--soft); border-radius: 999px; overflow: hidden; }
 .meter span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.nowrap { white-space: nowrap; }

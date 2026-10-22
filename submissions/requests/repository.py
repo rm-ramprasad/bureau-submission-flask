@@ -152,11 +152,21 @@ class RequestRepository:
                                 .order_by(t.c.submission_type, t.c.bureau_code)).all()
         return [SubmissionRequest.from_row(r) for r in rows]
 
-    def list_batches(self, limit: int = 50, tenant_id: str | None = None) -> list[BatchSummary]:
-        """Most recent batches first, each with its derived status. Optionally one tenant only."""
+    def list_batches(self, limit: int = 50, tenant_id: str | None = None, run_mode: RunMode | None = None,
+                     bureau_code: BureauCode | None = None, requested_from: datetime | None = None,
+                     requested_to: datetime | None = None) -> list[BatchSummary]:
+        """Most recent batches first, each with its derived status. Optional filters on the rows."""
         latest_q = select(t.c.batch_id, func.max(t.c.requested_at).label("at")).group_by(t.c.batch_id)
         if tenant_id is not None:
             latest_q = latest_q.where(t.c.tenant_id == tenant_id)
+        if run_mode is not None:
+            latest_q = latest_q.where(t.c.run_mode == str(run_mode))
+        if bureau_code is not None:
+            latest_q = latest_q.where(t.c.bureau_code == str(bureau_code))
+        if requested_from is not None:
+            latest_q = latest_q.where(t.c.requested_at >= requested_from)
+        if requested_to is not None:
+            latest_q = latest_q.where(t.c.requested_at < requested_to)
         with self.engine.connect() as conn:
             latest = latest_q.order_by(func.max(t.c.requested_at).desc()).limit(limit).subquery()
             rows = conn.execute(select(t).join(latest, latest.c.batch_id == t.c.batch_id)
@@ -178,6 +188,33 @@ class RequestRepository:
             submission_types=tuple(dict.fromkeys(r.submission_type for r in reqs)),
             bureau_codes=tuple(dict.fromkeys(r.bureau_code for r in reqs if r.bureau_code)),
             status_counts=counts, status=derive_batch_status(r.status for r in reqs))
+
+    def list_files(self, tenant_id: str | None = None, bureau_code: BureauCode | None = None,
+                   since: datetime | None = None, limit: int = 50, offset: int = 0
+                   ) -> tuple[list[SubmissionRequest], int]:
+        """Generated bureau files (succeeded GENERATE rows, newest first) and the total count.
+        Rows whose files retention removed are included (output_file_path is NULL)."""
+        conds = [t.c.run_mode == str(RunMode.GENERATE), t.c.status == str(S.SUCCEEDED),
+                 t.c.output_file_name.is_not(None)]
+        if tenant_id:
+            conds.append(t.c.tenant_id == tenant_id)
+        if bureau_code:
+            conds.append(t.c.bureau_code == str(bureau_code))
+        if since:
+            conds.append(t.c.finished_at >= since)
+        with self.engine.connect() as conn:
+            total = conn.execute(select(func.count()).select_from(t).where(*conds)).scalar()
+            rows = conn.execute(select(t).where(*conds).order_by(t.c.finished_at.desc(), t.c.request_id.desc())
+                                .limit(limit).offset(offset)).all()
+        return [SubmissionRequest.from_row(r) for r in rows], int(total)
+
+    def open_draft(self, tenant_id: str, as_of_date: date, submission_type: SubmissionType | str) -> str | None:
+        """The batch id of the open DRAFT request for this NBFC, date and type, if any."""
+        with self.engine.connect() as conn:
+            return conn.execute(select(t.c.batch_id).where(
+                t.c.tenant_id == tenant_id, t.c.as_of_date == as_of_date, t.c.status == str(S.DRAFT),
+                t.c.submission_type == str(SubmissionType(submission_type)), t.c.run_mode == str(RunMode.VALIDATE))
+                .order_by(t.c.request_id.desc())).scalar()
 
     def running_started_before(self, cutoff: datetime) -> list[SubmissionRequest]:
         """RUNNING rows whose worker started them before `cutoff` (candidates for stuck-row recovery)."""

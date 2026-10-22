@@ -28,9 +28,23 @@ def record(engine: Engine, actor: str, action: str, *, tenant_id: str | None = N
         log.exception("Could not write audit event %s by %s", action, actor)
 
 
-def recent(engine: Engine, limit: int = 100, tenant_id: str | None = None) -> list:
+def recent(engine: Engine, limit: int = 100, tenant_id: str | None = None, action: str | None = None,
+           actor: str | None = None, target: str | None = None) -> list:
     q = select(audit_event).order_by(audit_event.c.event_id.desc()).limit(limit)
-    if tenant_id:
-        q = q.where(audit_event.c.tenant_id == tenant_id)
+    for col, value in ((audit_event.c.tenant_id, tenant_id), (audit_event.c.action, action),
+                       (audit_event.c.actor, actor), (audit_event.c.target, target)):
+        if value:
+            q = q.where(col == value)
     with engine.connect() as conn:
         return conn.execute(q).all()
+
+
+def choices(engine: Engine, tenant_id: str | None = None) -> tuple[list[str], list[str]]:
+    """Distinct actions and actors (for the Audit page filters)."""
+    with engine.connect() as conn:
+        def distinct(col):
+            q = select(col).distinct().order_by(col)
+            if tenant_id:
+                q = q.where(audit_event.c.tenant_id == tenant_id)
+            return list(conn.execute(q).scalars())
+        return distinct(audit_event.c.action), distinct(audit_event.c.actor)

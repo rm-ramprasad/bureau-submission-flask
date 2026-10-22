@@ -336,7 +336,7 @@ tests/
   - worker status and user in the sidebar footer; restyled components (cards, tables, badges, meters);
   - existing pages moved into the new shell.
 - [x] K.2 **Dashboard** (§6.3; stages in `submissions/requests/stages.py`, tracker stage + period filter from K.3 built with it): request-stage KPI cards (raised, awaiting exceptions, in progress, validated-files pending, completed, failed, cancelled) with period filter and click-through; data KPIs; Needs attention; NBFC status; bureaus; recent requests. NBFC-filtered.
-- [ ] K.3 **Submission tracker:** filters (status, mode, bureau, date range) and paging. **Files** page.
+- [x] K.3 **Submission tracker:** filters (status, mode, bureau, requested from/to), paging (50), and the request-by-stage view. **Files** page (bureau and period filters, excluded/overridden counts, purged shown).
 - [x] K.0 **Validate only:**
   - remove direct GENERATE from the New request form and the scheduler (`--mode`);
   - `create_batch(GENERATE)` requires a validated `snapshot_id`; update tests and RUNBOOK.
@@ -352,7 +352,7 @@ tests/
   - Generate blocked while re-validation is pending, with a confirmation showing counts;
   - exceptions CSV sections for excluded loans and overrides;
   - audit `ADJUSTMENT_ADDED` / `ADJUSTMENT_REMOVED` / `ADJUSTMENTS_CONFIRMED`.
-- [ ] K.6 **"Exclude loan" / "Override…" actions** on the Findings page (into a new or open draft request for the same date); adjustments summary on the batch page and Files page; audit filters.
+- [x] K.6 **"Exclude loan" / "Override…" actions** on the Findings page (into the open draft request for the same NBFC, date and type, created on first use; Override opens it pre-filled); adjustments summary on the batch page and Files page; audit filters.
 - [ ] K.7 **Admin pages:** NBFCs & bureau profiles (read-only); Rules & policies (catalogue per NBFC, editable policy overrides with audit).
 - [ ] K.8 Declarative custom rules (compile to SQL) and maintenance in the UI.
 - [ ] K.9 Findings trends across runs (from the kept `validation_summary`).

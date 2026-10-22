@@ -1,31 +1,33 @@
-"""Pages: batches, new run, batch detail (actions, generate-from-validation, downloads), findings."""
+"""Pages: dashboard, tracker, files, new request, exceptions step, batch detail (submit, generate, downloads),
+findings (with exclude / override into a draft request), audit."""
 
 from __future__ import annotations
 
 import itertools
 import logging
 import math
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 from flask import (
     Blueprint, Response, abort, current_app, flash, redirect, render_template, request, session, url_for,
 )
+from sqlalchemy import select
 
 from submissions.adjustments import (
     AdjustmentError, AdjustmentNotFoundError, AdjustmentScope, applied_summary, parse_keys, parse_override_value,
 )
+from submissions.canonical.schema import ENTITY_TABLES
+from submissions.db import utcnow
 from submissions.enums import (
-    AdjustmentKind, BatchStatus, OverrideField, ReportingCycle, RequestStatus, RunMode, SnapshotStatus,
+    AdjustmentKind, BatchStatus, BureauCode, OverrideField, ReportingCycle, RequestStatus, RunMode, SnapshotStatus,
     SubmissionType,
 )
-from submissions.db import utcnow
 from submissions.ops import audit
-from submissions.requests import stages
-from submissions.requests.stages import Period, Stage
 from submissions.pipeline import enabled_types
 from submissions.requests import (
-    DuplicateActiveRequestError, InvalidTransitionError, RequestNotFoundError, RequestValidationError,
+    DuplicateActiveRequestError, InvalidTransitionError, RequestNotFoundError, RequestValidationError, stages,
 )
+from submissions.requests.stages import Period, Stage
 from submissions.snapshot import SnapshotNotFoundError
 from submissions.storage import StoredFileNotFound
 from submissions.tenants import InactiveTenantError, TenantNotFoundError
@@ -36,6 +38,7 @@ from submissions.web.auth import current_user
 bp = Blueprint("ui", __name__)
 log = logging.getLogger(__name__)
 PAGE_SIZE = 200
+TRACKER_PAGE = 50
 ACTIVE = {RequestStatus.PENDING, RequestStatus.RUNNING}
 
 
@@ -141,8 +144,41 @@ def batches():
             reqs = [r for r in reqs if r.stage is stage]
         return render_template("requests.html", reqs=reqs, stage=stage, period=period, periods=list(Period),
                                stages_all=list(Stage))
-    return render_template("batches.html", batches=s.requests.list_batches(limit=100, tenant_id=selected_tenant()),
-                           periods=list(Period), stages_all=list(Stage))
+    flt = {k: request.args.get(k) or "" for k in ("status", "mode", "bureau", "from", "to")}
+    try:
+        mode = RunMode(flt["mode"]) if flt["mode"] else None
+        bureau = BureauCode(flt["bureau"]) if flt["bureau"] else None
+        status = BatchStatus(flt["status"]) if flt["status"] else None
+        start = datetime.combine(date.fromisoformat(flt["from"]), time()) if flt["from"] else None
+        end = datetime.combine(date.fromisoformat(flt["to"]) + timedelta(days=1), time()) if flt["to"] else None
+    except ValueError:
+        abort(400)
+    found = s.requests.list_batches(limit=2000, tenant_id=selected_tenant(), run_mode=mode, bureau_code=bureau,
+                                    requested_from=start, requested_to=end)
+    if status:
+        found = [b for b in found if b.status is status]
+    page = max(1, request.args.get("page", 1, type=int))
+    pages = max(1, math.ceil(len(found) / TRACKER_PAGE))
+    return render_template("batches.html", batches=found[(page - 1) * TRACKER_PAGE:page * TRACKER_PAGE],
+                           total=len(found), page=page, pages=pages, flt=flt, filtered=any(flt.values()),
+                           periods=list(Period), stages_all=list(Stage), statuses=list(BatchStatus),
+                           modes=list(RunMode), bureaus=list(BureauCode))
+
+
+@bp.get("/files")
+def files():
+    s = svc()
+    try:
+        bureau = BureauCode(request.args["bureau"]) if request.args.get("bureau") else None
+    except ValueError:
+        abort(400)
+    period = _period() if request.args.get("period") else Period.ALL
+    page = max(1, request.args.get("page", 1, type=int))
+    rows, total = s.requests.list_files(selected_tenant(), bureau, period.start(utcnow()), TRACKER_PAGE,
+                                        (page - 1) * TRACKER_PAGE)
+    return render_template("files.html", rows=rows, total=total, page=page,
+                           pages=max(1, math.ceil(total / TRACKER_PAGE)), bureau=bureau, bureaus=list(BureauCode),
+                           period=period, periods=list(Period), store=s.store.describe())
 
 
 # ---------------------------------------------------------------- new request (always Validate)
@@ -482,7 +518,81 @@ def discard_request(batch_id: str):
 
 @bp.get("/audit")
 def audit_log():
-    return render_template("audit.html", events=audit.recent(svc().engine, 200, selected_tenant()))
+    s = svc()
+    flt = {k: request.args.get(k) or "" for k in ("action", "actor", "target")}
+    actions, actors = audit.choices(s.engine, selected_tenant())
+    return render_template("audit.html", events=audit.recent(s.engine, 200, selected_tenant(), flt["action"] or None,
+                                                             flt["actor"] or None, flt["target"] or None),
+                           flt=flt, actions=actions, actors=actors)
+
+
+# ---------------------------------------------------------------- findings -> exceptions of a new draft request
+def _draft_for(snap) -> str:
+    """The open draft request for the snapshot's NBFC, date and type; created if there is none."""
+    s = svc()
+    draft = s.requests.open_draft(snap.tenant_id, snap.as_of_date, snap.submission_type)
+    if draft:
+        return draft
+    source = s.requests.list_batch(snap.batch_id) if snap.batch_id else []
+    cycle = source[0].reporting_cycle if source else None
+    draft = s.requests.create_batch(snap.tenant_id, snap.as_of_date, RunMode.VALIDATE, [snap.submission_type], (),
+                                    cycle, current_user(), draft=True)
+    audit.record(s.engine, current_user(), "RUN_CREATED", tenant_id=snap.tenant_id, target=draft,
+                 as_of=snap.as_of_date, mode=str(RunMode.VALIDATE), types=[snap.submission_type.value],
+                 status="DRAFT", source=f"findings of snapshot {snap.snapshot_id}")
+    return draft
+
+
+def _finding_account(snapshot_id: int):
+    """(snapshot, account_number) for the account_key posted from the Findings page."""
+    s = svc()
+    try:
+        snap = s.snapshots.get(snapshot_id)
+    except SnapshotNotFoundError:
+        abort(404)
+    account = ENTITY_TABLES["account"]
+    with s.engine.connect() as conn:
+        number = conn.execute(select(account.c.account_number).where(
+            account.c.snapshot_id == snapshot_id, account.c.account_key == request.form.get("account_key", ""))
+        ).scalar()
+    if not number:
+        abort(404, "That loan is not in this snapshot (it may have been purged).")
+    return snap, number
+
+
+@bp.post("/snapshots/<int:snapshot_id>/exclude")
+def exclude_from_findings(snapshot_id: int):
+    s = svc()
+    snap, number = _finding_account(snapshot_id)
+    back = request.form.get("next", "")
+    back = back if back.startswith("/") and not back.startswith("//") else url_for("ui.findings", snapshot_id=snapshot_id)
+    try:
+        draft = _draft_for(snap)
+    except (RequestValidationError, DuplicateActiveRequestError) as exc:
+        flash(f"Cannot open a new request for this date: {exc}", "error")
+        return redirect(back)
+    (row,) = [r for r in s.requests.list_batch(draft) if r.submission_type is snap.submission_type]
+    result = s.adjustments.add_exclusions(AdjustmentScope.of(row), AdjustmentKind.EXCLUDE_ACCOUNT, [number],
+                                          f"From findings of snapshot #{snapshot_id}", current_user())
+    if result.added:
+        audit.record(s.engine, current_user(), "ADJUSTMENT_ADDED", tenant_id=snap.tenant_id, target=draft,
+                     kind=str(AdjustmentKind.EXCLUDE_ACCOUNT), keys=result.added, count=1,
+                     reason=f"From findings of snapshot #{snapshot_id}")
+    flash(f"Loan {number} {'added to' if result.added else 'is already in'} the exclusions of draft request "
+          f"{draft}. Submit that request to validate without it.", "ok")
+    return redirect(back)
+
+
+@bp.post("/snapshots/<int:snapshot_id>/override")
+def override_from_findings(snapshot_id: int):
+    snap, number = _finding_account(snapshot_id)
+    try:
+        draft = _draft_for(snap)
+    except (RequestValidationError, DuplicateActiveRequestError) as exc:
+        flash(f"Cannot open a new request for this date: {exc}", "error")
+        return redirect(url_for("ui.findings", snapshot_id=snapshot_id))
+    return redirect(url_for("ui.request_exceptions", batch_id=draft, type=snap.submission_type.value,
+                            account=number, field=request.form.get("field") or None))
 
 
 # ---------------------------------------------------------------- findings
@@ -503,7 +613,8 @@ def findings(snapshot_id: int):
     rows, total = results.findings(s.engine, snapshot_id, flt, PAGE_SIZE, (page - 1) * PAGE_SIZE)
     return render_template("findings.html", snap=snap, summary=results.summary(s.engine, snapshot_id),
                            records=results.record_counts(s.engine, snapshot_id), rows=rows, total=total, flt=flt,
-                           page=page, pages=max(1, math.ceil(total / PAGE_SIZE)), outcomes=results.OUTCOME_ORDER)
+                           page=page, pages=max(1, math.ceil(total / PAGE_SIZE)), outcomes=results.OUTCOME_ORDER,
+                           overridable={f.value for f in OverrideField})
 
 
 @bp.get("/snapshots/<int:snapshot_id>/findings.csv")

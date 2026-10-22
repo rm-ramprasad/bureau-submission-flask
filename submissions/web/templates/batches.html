@@ -7,23 +7,35 @@
     <h1>Submission tracker</h1>
     <p class="subtitle">Validation runs and generated files{{ ' for ' ~ selected_tenant if selected_tenant else ' across all NBFCs' }}. Times are UTC.</p>
   </div>
+  <div class="segmented"><a class="on" href="{{ url_for('ui.batches') }}">All runs</a>
+    <a href="{{ url_for('ui.batches', period='all') }}">Requests by stage</a></div>
 </div>
+
 <form method="get" class="panel row scope">
-  <div><label for="stage">Requests by stage</label>
-    <select id="stage" name="stage"><option value="">All stages</option>
-      {% for st in stages_all %}<option value="{{ st.value }}">{{ st.label }}</option>{% endfor %}</select></div>
-  <div><label for="period">Period</label>
-    <select id="period" name="period">{% for p in periods %}<option value="{{ p.value }}">{{ p.label }}</option>{% endfor %}</select></div>
-  <div><button type="submit" class="secondary">Show requests</button></div>
+  <div><label for="status">Status</label>
+    <select id="status" name="status"><option value="">All</option>
+      {% for st in statuses %}<option value="{{ st.value }}" {{ 'selected' if st.value == flt.status }}>{{ st.value | title }}</option>{% endfor %}</select></div>
+  <div><label for="mode">Mode</label>
+    <select id="mode" name="mode"><option value="">All</option>
+      {% for m in modes %}<option value="{{ m.value }}" {{ 'selected' if m.value == flt.mode }}>{{ 'Validate' if m.value == 'VALIDATE' else 'Generate files' }}</option>{% endfor %}</select></div>
+  <div><label for="bureau">Bureau</label>
+    <select id="bureau" name="bureau"><option value="">All</option>
+      {% for b in bureaus %}<option value="{{ b.value }}" {{ 'selected' if b.value == flt.bureau }}>{{ b.value | replace('_', ' ') | title }}</option>{% endfor %}</select></div>
+  <div><label for="from">Requested from</label><input type="date" id="from" name="from" value="{{ flt['from'] }}"></div>
+  <div><label for="to">to</label><input type="date" id="to" name="to" value="{{ flt.to }}"></div>
+  <div><button type="submit" class="secondary">Filter</button>{% if filtered %} <a href="{{ url_for('ui.batches') }}">Clear</a>{% endif %}</div>
 </form>
+
 <div class="panel flush">
+  <div class="panel-head"><h2>{{ total }} run(s)</h2>{% if pages > 1 %}<span class="muted">page {{ page }} of {{ pages }}</span>{% endif %}</div>
   {% if batches %}
   <div class="table-wrap"><table>
-    <thead><tr><th>Requested</th><th>NBFC</th><th>As of</th><th>Mode</th><th>Types</th><th>Bureaus</th><th>Status</th><th>By</th></tr></thead>
+    <thead><tr><th>Requested</th><th>Request</th><th>NBFC</th><th>As of</th><th>Mode</th><th>Types</th><th>Bureaus</th><th>Status</th><th>By</th></tr></thead>
     <tbody>
     {% for b in batches %}
       <tr>
-        <td><a href="{{ url_for('ui.batch', batch_id=b.batch_id) }}">{{ b.requested_at | dt }}</a></td>
+        <td>{{ b.requested_at | dt }}</td>
+        <td class="mono"><a href="{{ url_for('ui.batch', batch_id=b.batch_id) }}">{{ b.batch_id }}</a></td>
         <td>{{ b.tenant_id }}</td>
         <td>{{ b.as_of_date | d }}</td>
         <td>{{ 'Validate' if b.run_mode.value == 'VALIDATE' else 'Generate files' }}</td>
@@ -36,7 +48,15 @@
     </tbody>
   </table></div>
   {% else %}
-  <div class="panel-body muted">No runs yet. <a href="{{ url_for('ui.new_run') }}">Start a validation</a>.</div>
+  <div class="panel-body muted">{% if filtered %}No runs match these filters.{% else %}No runs yet. <a href="{{ url_for('ui.new_run') }}">Create a request</a>.{% endif %}</div>
   {% endif %}
 </div>
+{% if pages > 1 %}
+<div class="pager">
+  {% set args = request.args.to_dict() %}
+  {% if page > 1 %}{% set _ = args.update(page=page - 1) %}<a href="{{ url_for('ui.batches', **args) }}">Previous</a>{% endif %}
+  <span class="muted">Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}{% set _ = args.update(page=page + 1) %}<a href="{{ url_for('ui.batches', **args) }}">Next</a>{% endif %}
+</div>
+{% endif %}
 {% endblock %}
