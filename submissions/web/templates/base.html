@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {% if refreshing %}<meta http-equiv="refresh" content="5">{% endif %}
+  <title>{% block title %}Bureau Submissions{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v=asset_version) }}">
+</head>
+{%- macro icon(name) -%}
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+  {%- if name == 'dashboard' %}<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>
+  {%- elif name == 'new' %}<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 11v6M9 14h6"/>
+  {%- elif name == 'exceptions' %}<circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 16.5v.5"/>
+  {%- elif name == 'tracker' %}<path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/>
+  {%- elif name == 'files' %}<ellipse cx="12" cy="5.5" rx="8" ry="2.5"/><path d="M4 5.5v13c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5v-13M4 12c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5"/>
+  {%- elif name == 'audit' %}<path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/>
+  {%- elif name == 'admin' %}<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>
+  {%- elif name == 'pulse' %}<path d="M3 12h4l3-8 4 16 3-8h4"/>
+  {%- elif name == 'plus' %}<path d="M12 5v14M5 12h14"/>
+  {%- endif %}
+</svg>
+{%- endmacro -%}
+{%- macro nav(endpoint, label, name, soon=false) -%}
+  {%- if soon -%}
+    <span class="nav-item soon" title="Coming in a later step">{{ icon(name) }}<span>{{ label }}</span><em>soon</em></span>
+  {%- else -%}
+    <a class="nav-item {{ 'active' if request.endpoint in (endpoint if endpoint is not string else [endpoint]) }}"
+       href="{{ url_for(endpoint if endpoint is string else endpoint[0]) }}">{{ icon(name) }}<span>{{ label }}</span></a>
+  {%- endif -%}
+{%- endmacro -%}
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">{{ icon('pulse') }}</span>
+      <span><strong>Bureau Submissions</strong><small>Credit bureau reporting</small></span>
+    </div>
+    <nav>
+      <div class="nav-group">Main</div>
+      {{ nav('ui.dashboard', 'Dashboard', 'dashboard') }}
+      {{ nav(['ui.new_run', 'ui.create_run'], 'New request', 'new') }}
+      {{ nav('ui.exceptions', 'Exceptions', 'exceptions', soon=true) }}
+      <div class="nav-group">Reports</div>
+      {{ nav(['ui.batches', 'ui.batch', 'ui.findings'], 'Submission tracker', 'tracker') }}
+      {{ nav('ui.files', 'Files', 'files', soon=true) }}
+      {{ nav('ui.audit_log', 'Audit', 'audit') }}
+      <div class="nav-group">Admin</div>
+      {{ nav('ui.admin', 'NBFCs & rules', 'admin', soon=true) }}
+    </nav>
+    <div class="sidebar-foot">
+      <div class="worker {{ 'ok' if worker_alive else 'down' }}">
+        <span class="dot"></span>{{ 'Worker online' if worker_alive else 'No worker running' }}
+      </div>
+      <div class="user"><span class="avatar">{{ current_user_name[:2] | upper }}</span>
+        <span><strong>{{ current_user_name }}</strong><small>Bureau reporting team</small></span></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="crumbs"><a href="{{ url_for('ui.dashboard') }}">Bureau reporting</a> <span>/</span> {% block crumb %}{% endblock %}</div>
+      <form method="post" action="{{ url_for('ui.select_tenant') }}" class="tenant-picker">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="next" value="{{ request.full_path if request.method == 'GET' else url_for('ui.dashboard') }}">
+        <label for="global-tenant">NBFC</label>
+        <select id="global-tenant" name="tenant" onchange="this.form.submit()">
+          <option value="">All NBFCs</option>
+          {% for t in nav_tenants %}<option value="{{ t.tenant_id }}" {{ 'selected' if t.tenant_id == selected_tenant }}>{{ t.display_name }}</option>{% endfor %}
+        </select>
+        <noscript><button class="small secondary">Apply</button></noscript>
+      </form>
+      <a class="button" href="{{ url_for('ui.new_run') }}">{{ icon('plus') }} New request</a>
+    </header>
+
+    <main class="content">
+      {% if not worker_alive %}
+        <div class="flash error"><strong>No worker running.</strong> Queued runs stay PENDING until a worker is started
+          (<span class="mono">python -m submissions.worker</span>).
+          {% if worker_last_seen %}Last poll {{ worker_last_seen | dt }} UTC.{% else %}No worker has polled yet.{% endif %}</div>
+      {% endif %}
+      {% for category, message in get_flashed_messages(with_categories=true) %}
+        <div class="flash {{ category }}">{{ message }}</div>
+      {% endfor %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+</body>
+</html>

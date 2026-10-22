@@ -1,0 +1,12 @@
+# Install as ec2-user:  crontab /opt/submissions/deploy/crontab
+# Times are UTC (the server clock). 00:30 UTC = 06:00 IST.
+LOG=/var/log/submissions-cron.log
+
+# Month end: Validate runs for all active NBFCs on the 2nd
+30 0 2 * *   cd /opt/submissions && docker compose run --rm -T worker python -m submissions.ops.schedule --cycle ME >> $LOG 2>&1
+# Weekly cycles
+30 0 10 * *  cd /opt/submissions && docker compose run --rm -T worker python -m submissions.ops.schedule --cycle W1 >> $LOG 2>&1
+30 0 17 * *  cd /opt/submissions && docker compose run --rm -T worker python -m submissions.ops.schedule --cycle W2 >> $LOG 2>&1
+30 0 24 * *  cd /opt/submissions && docker compose run --rm -T worker python -m submissions.ops.schedule --cycle W3 >> $LOG 2>&1
+# Nightly retention, 02:00 IST
+30 20 * * *  cd /opt/submissions && docker compose run --rm -T worker python -m submissions.ops.retention --days 90 >> $LOG 2>&1

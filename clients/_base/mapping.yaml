@@ -1,0 +1,278 @@
+# Base mapping: standard LMS layout (borrower_demographics + account_details) -> canonical model.
+# Tenant files extend this and override only what differs. See submissions/adapters/mapping.py for the format.
+canonical_version: "1.0"
+
+lookups:
+  gender: {M: "2", F: "1", T: "3"}
+  occupation: {SALARIED: "01", PROFESSIONAL: "02", SELF_EMPLOYED: "03", OTHER: "04"}
+  # Quote words YAML reads as booleans (on/off/yes/no/true/false, any case), e.g. "OFF". The loader rejects them.
+  income_basis: {GROSS: "G", NET: "N"}
+  income_period: {MONTHLY: "M", ANNUAL: "A"}
+  phone_type: {MOBILE: "01", HOME: "02", OFFICE: "03", OTHER: "00"}
+  address_category: {PERM: "01", RES: "02", "OFF": "03", OTH: "04", MORT: "05"}
+  residence_code: {OWN: "01", RENT: "02"}
+  state:
+    Jammu & Kashmir: "01"
+    Himachal Pradesh: "02"
+    Punjab: "03"
+    Chandigarh: "04"
+    Uttarakhand: "05"
+    Haryana: "06"
+    Delhi: "07"
+    Rajasthan: "08"
+    Uttar Pradesh: "09"
+    Bihar: "10"
+    Sikkim: "11"
+    Arunachal Pradesh: "12"
+    Nagaland: "13"
+    Manipur: "14"
+    Mizoram: "15"
+    Tripura: "16"
+    Meghalaya: "17"
+    Assam: "18"
+    West Bengal: "19"
+    Jharkhand: "20"
+    Odisha: "21"
+    Orissa: "21"
+    Chhattisgarh: "22"
+    Madhya Pradesh: "23"
+    Gujarat: "24"
+    Maharashtra: "27"
+    Andhra Pradesh: "28"
+    Karnataka: "29"
+    Goa: "30"
+    Kerala: "32"
+    Tamil Nadu: "33"
+    Puducherry: "34"
+    Telangana: "36"
+    Ladakh: "37"
+    Foreign: "77"
+    APO: "99"
+  account_type:
+    HL: "02"
+    LAP: "03"
+    PL: "05"
+    AL: "01"
+    UCL: "32"
+    TWL: "13"
+    CVL: "17"
+    GL: "07"
+    EDU: "08"
+    CDL: "06"
+    BLU: "61"
+    BLS: "50"
+    MFP: "41"
+    MFB: "40"
+    KCC: "36"
+    LAS: "04"
+    LOC: "37"
+    CC: "10"
+    SCC: "31"
+    CCC: "35"
+    FLC: "16"
+    OD: "12"
+  ownership: {PRIMARY: "1", ADDON: "2", GUARANTOR: "3", JOINT: "4", DECEASED: "5"}
+  suit_status: {NONE: "00", SUIT_FILED: "01", WILFUL: "02", SUIT_WILFUL: "03"}
+  facility_status:
+    RESTRUCT_COVID: "12"
+    WRITTEN_OFF: "02"
+    SETTLED: "03"
+    POST_WO_SETTLED: "04"
+    AUCTIONED_SETTLED: "15"
+    REPOSSESSED_SETTLED: "16"
+    GUARANTEE_INVOKED: "17"
+  asset_classification: {STD: "01", SUB: "02", DBT: "03", LOSS: "04", SMA: "05"}
+  collateral_type: {NONE: "00", PROPERTY: "01", GOLD: "02", SHARES: "03", DEPOSIT: "04", MULTIPLE: "05", OTHER: "06"}
+  payment_frequency:
+    WEEKLY: "01"
+    FORTNIGHTLY: "02"
+    MONTHLY: "03"
+    QUARTERLY: "04"
+    BULLET: "05"
+    DAILY: "06"
+    HALFYEARLY: "07"
+    YEARLY: "08"
+    ONDEMAND: "09"
+
+entities:
+  party:
+    from: "{schema}.borrower_demographics b"
+    columns:
+      party_key: b.customer_id
+      full_name: "CONCAT_WS(' ', b.first_name, b.middle_name, b.last_name)"
+      birth_date: b.birth_date
+      gender: {expr: b.sex, lookup: gender}
+      occupation: {expr: b.occupation, lookup: occupation}
+      income: b.income_amount
+      income_basis: {expr: b.income_basis, lookup: income_basis}
+      income_period: {expr: b.income_period, lookup: income_period}
+
+  party_identifier:      # wide ID columns -> one row per ID present
+    selects:
+      pan:
+        from: "{schema}.borrower_demographics b"
+        where: b.pan_number IS NOT NULL
+        columns: {party_key: b.customer_id, id_type: "'01'", id_number: b.pan_number}
+      passport:
+        from: "{schema}.borrower_demographics b"
+        where: b.passport_number IS NOT NULL
+        columns: {party_key: b.customer_id, id_type: "'02'", id_number: b.passport_number,
+                  issue_date: b.passport_issue_date, expiry_date: b.passport_expiry_date}
+      voter_id:
+        from: "{schema}.borrower_demographics b"
+        where: b.voter_id_number IS NOT NULL
+        columns: {party_key: b.customer_id, id_type: "'03'", id_number: b.voter_id_number,
+                  issue_date: b.voter_id_issue_date}
+      driving_licence:
+        from: "{schema}.borrower_demographics b"
+        where: b.driving_license_number IS NOT NULL
+        columns: {party_key: b.customer_id, id_type: "'04'", id_number: b.driving_license_number,
+                  issue_date: b.driving_license_issue_date, expiry_date: b.driving_license_expiry_date}
+      ration_card:
+        from: "{schema}.borrower_demographics b"
+        where: b.ration_card_number IS NOT NULL
+        columns: {party_key: b.customer_id, id_type: "'05'", id_number: b.ration_card_number}
+      aadhaar:
+        from: "{schema}.borrower_demographics b"
+        where: b.aadhaar_number IS NOT NULL
+        columns: {party_key: b.customer_id, id_type: "'06'", id_number: b.aadhaar_number}
+      ckyc:
+        from: "{schema}.borrower_demographics b"
+        where: b.ckyc_number IS NOT NULL
+        columns: {party_key: b.customer_id, id_type: "'09'", id_number: b.ckyc_number}
+      gram_g:
+        from: "{schema}.borrower_demographics b"
+        where: b.gram_g_id IS NOT NULL
+        columns: {party_key: b.customer_id, id_type: "'10'", id_number: b.gram_g_id}
+
+  party_phone:           # phone slots 1-4 -> one row per number present
+    selects:
+      phone1:
+        from: "{schema}.borrower_demographics b"
+        where: b.phone1_number IS NOT NULL
+        columns: {party_key: b.customer_id, phone_number: b.phone1_number, extension: b.phone1_extension,
+                  phone_type: {expr: b.phone1_type, lookup: phone_type}, priority: "1"}
+      phone2:
+        from: "{schema}.borrower_demographics b"
+        where: b.phone2_number IS NOT NULL
+        columns: {party_key: b.customer_id, phone_number: b.phone2_number, extension: b.phone2_extension,
+                  phone_type: {expr: b.phone2_type, lookup: phone_type}, priority: "2"}
+      phone3:
+        from: "{schema}.borrower_demographics b"
+        where: b.phone3_number IS NOT NULL
+        columns: {party_key: b.customer_id, phone_number: b.phone3_number, extension: b.phone3_extension,
+                  phone_type: {expr: b.phone3_type, lookup: phone_type}, priority: "3"}
+      phone4:
+        from: "{schema}.borrower_demographics b"
+        where: b.phone4_number IS NOT NULL
+        columns: {party_key: b.customer_id, phone_number: b.phone4_number, extension: b.phone4_extension,
+                  phone_type: {expr: b.phone4_type, lookup: phone_type}, priority: "4"}
+
+  party_email:
+    selects:
+      email1:
+        from: "{schema}.borrower_demographics b"
+        where: b.email1 IS NOT NULL
+        columns: {party_key: b.customer_id, email: b.email1, priority: "1"}
+      email2:
+        from: "{schema}.borrower_demographics b"
+        where: b.email2 IS NOT NULL
+        columns: {party_key: b.customer_id, email: b.email2, priority: "2"}
+      email3:
+        from: "{schema}.borrower_demographics b"
+        where: b.email3 IS NOT NULL
+        columns: {party_key: b.customer_id, email: b.email3, priority: "3"}
+
+  party_address:         # address slots 1-3; city goes to line 4, state/PIN to their own columns
+    selects:
+      address1:
+        from: "{schema}.borrower_demographics b"
+        where: b.address1_line1 IS NOT NULL
+        columns:
+          party_key: b.customer_id
+          address_line_1: b.address1_line1
+          address_line_2: b.address1_line2
+          address_line_3: b.address1_line3
+          address_line_4: b.address1_city
+          state_code: {expr: b.address1_state, lookup: state}
+          pin_code: b.address1_pin_code
+          address_category: {expr: b.address1_type, lookup: address_category, default: "04"}
+          residence_code: {expr: b.address1_tenure, lookup: residence_code}
+          priority: "1"
+      address2:
+        from: "{schema}.borrower_demographics b"
+        where: b.address2_line1 IS NOT NULL
+        columns:
+          party_key: b.customer_id
+          address_line_1: b.address2_line1
+          address_line_2: b.address2_line2
+          address_line_3: b.address2_line3
+          address_line_4: b.address2_city
+          state_code: {expr: b.address2_state, lookup: state}
+          pin_code: b.address2_pin_code
+          address_category: {expr: b.address2_type, lookup: address_category, default: "04"}
+          residence_code: {expr: b.address2_tenure, lookup: residence_code}
+          priority: "2"
+      address3:
+        from: "{schema}.borrower_demographics b"
+        where: b.address3_line1 IS NOT NULL
+        columns:
+          party_key: b.customer_id
+          address_line_1: b.address3_line1
+          address_line_2: b.address3_line2
+          address_line_3: b.address3_line3
+          address_line_4: b.address3_city
+          state_code: {expr: b.address3_state, lookup: state}
+          pin_code: b.address3_pin_code
+          address_category: {expr: b.address3_type, lookup: address_category, default: "04"}
+          residence_code: {expr: b.address3_tenure, lookup: residence_code}
+          priority: "3"
+
+  account:               # account_details has one row per holder -> DISTINCT gives one row per loan
+    from: "{schema}.account_details a"
+    where: "a.disbursement_date <= :as_of_date"
+    distinct: true
+    columns:
+      account_key: a.loan_id
+      account_number: a.loan_number
+      account_type: {expr: a.product_code, lookup: account_type}
+      date_opened: a.disbursement_date
+      date_last_payment: a.last_payment_date
+      date_closed: a.closed_date
+      date_reported: a.reported_date
+      high_credit_amount: a.sanction_amount
+      current_balance: a.outstanding_amount
+      amount_overdue: a.overdue_amount
+      days_past_due: a.days_past_due
+      suit_filed_status: {expr: a.suit_status, lookup: suit_status}
+      credit_facility_status: {expr: a.facility_status, lookup: facility_status}
+      asset_classification: {expr: a.asset_classification, lookup: asset_classification}
+      collateral_value: a.collateral_value
+      collateral_type: {expr: a.collateral_type, lookup: collateral_type}
+      credit_limit: a.credit_limit
+      cash_limit: a.cash_limit
+      rate_of_interest: a.interest_rate_percent
+      repayment_tenure: a.tenure_months
+      emi_amount: a.emi_amount
+      written_off_total: a.writeoff_total_amount
+      written_off_principal: a.writeoff_principal_amount
+      settlement_amount: a.settlement_amount
+      payment_frequency: {expr: a.pay_frequency, lookup: payment_frequency}
+      actual_payment_amount: a.last_payment_amount
+      old_member_code: a.previous_member_code
+      old_member_short_name: a.previous_member_short_name
+      old_account_number: a.previous_loan_number
+      old_account_type: {expr: a.previous_product_code, lookup: account_type}
+      old_ownership_indicator: {expr: a.previous_party_role, lookup: ownership}
+
+  account_holder:        # UCRF: every holder of a joint account is reported as Joint (4), primary included
+    from: "{schema}.account_details a"
+    where: "a.disbursement_date <= :as_of_date"
+    columns:
+      account_key: a.loan_id
+      party_key: a.customer_id
+      ownership_indicator:
+        expr: >-
+          CASE WHEN a.party_role = 'PRIMARY' AND EXISTS (SELECT 1 FROM {schema}.account_details j
+          WHERE j.loan_id = a.loan_id AND j.party_role = 'JOINT') THEN 'JOINT' ELSE a.party_role END
+        lookup: ownership

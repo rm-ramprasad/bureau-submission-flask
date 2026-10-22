@@ -1,0 +1,54 @@
+# nbfc_002: customised LMS layout. Only the differences from the base mapping are listed.
+canonical_version: "1.0"
+extends: ../_base/mapping.yaml
+
+lookups:                       # merged into the base lookups
+  gender: {MALE: "2", FEMALE: "1", TRANSGENDER: "3"}
+  account_type:
+    HOME_LOAN: "02"
+    LOAN_AGAINST_PROP: "03"
+    PERSONAL: "05"
+    AUTO: "01"
+    USED_CAR: "32"
+    TWO_WHEELER: "13"
+    COMM_VEHICLE: "17"
+    GOLD: "07"
+    EDUCATION: "08"
+    CONSUMER_DURABLE: "06"
+    BIZ_UNSECURED: "61"
+    BIZ_SECURED: "50"
+    MFI_PERSONAL: "41"
+    MFI_BUSINESS: "40"
+    KISAN_CARD: "36"
+    LOAN_AGAINST_SHARES: "04"
+    LOAN_ON_CARD: "37"
+    CREDIT_CARD: "10"
+    SECURED_CARD: "31"
+    CORPORATE_CARD: "35"
+    FLEET_CARD: "16"
+    OVERDRAFT: "12"
+
+entities:
+  party:
+    columns:
+      birth_date: b.dob                       # column renamed
+
+  party_phone:
+    selects:
+      phone1:
+        where: b.primary_mobile IS NOT NULL   # column renamed
+        columns: {phone_number: b.primary_mobile}
+
+  account:                                    # DPD lives in an extension table
+    from: "{schema}.account_details a LEFT JOIN {schema}.loan_ext x ON x.loan_id = a.loan_id"
+    columns:
+      days_past_due: x.overdue_days
+
+  extension_attribute:                        # custom field for NBFC-specific validation rules
+    from: "{schema}.loan_ext x"
+    where: x.scheme_code IS NOT NULL
+    columns:
+      entity: "'account'"
+      entity_key: x.loan_id
+      attr_name: "'scheme_code'"
+      attr_value: x.scheme_code

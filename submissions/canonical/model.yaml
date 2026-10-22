@@ -1,0 +1,351 @@
+# Canonical model: the single source of truth for the submission data contract.
+#
+# Every adapter maps an NBFC schema INTO this model; validation and formatting read ONLY this model.
+# Generated from this file: snapshot tables (c_*), reference tables (ref_code, ref_state_pin), migration SQL.
+# Changing this file is a product release: bump canonical_version and regenerate the migration
+#   python -m submissions.canonical.generate --out migrations/NNN_<name>.sql
+#
+# Column keys: type (string|code|date|decimal|integer), length (string/code), required, code_list (code),
+#              ucrf (field the column feeds), description.
+# Rules of the model:
+#  - Values are UCRF codes, not client codes (adapters translate). Code columns are wide enough to carry an
+#    UNMAPPED raw client value through, so validation can report it.
+#  - The snapshot accepts whatever the source holds (no unique constraints); validation judges it.
+#  - No semicolons in descriptions (the migration runner splits statements on ';').
+
+canonical_version: "1.0"
+
+code_lists:
+  gender:
+    description: Gender (PN.08)
+    codes: {"1": Female, "2": Male, "3": Transgender}
+
+  id_type:
+    description: Identification type (ID.01)
+    codes:
+      "01": PAN
+      "02": Passport
+      "03": Voter ID
+      "04": Driving Licence
+      "05": Ration Card
+      "06": UID (Aadhaar)
+      "07": {description: Additional ID 1 (future use), active: false}
+      "08": {description: Additional ID 2 (future use), active: false}
+      "09": CKYC
+      "10": G RAM G
+
+  phone_type:
+    description: Telephone type (PT.03)
+    codes: {"00": Not Classified, "01": Mobile, "02": Home, "03": Office}
+
+  address_category:
+    description: Address category (PA.08), defaults to 04
+    codes: {"01": Permanent, "02": Residence, "03": Office, "04": Not Categorized, "05": Mortgage Property}
+
+  residence_code:
+    description: Residence code (PA.09)
+    codes: {"01": Owned, "02": Rented}
+
+  state_code:
+    description: State / UT code (PA.06, Appendix B) with PIN prefix range (Appendix C)
+    codes:
+      "01": {description: Jammu & Kashmir, pin_min: 18, pin_max: 19}
+      "02": {description: Himachal Pradesh, pin_min: 17, pin_max: 17}
+      "03": {description: Punjab, pin_min: 14, pin_max: 16}
+      "04": {description: Chandigarh, pin_min: 14, pin_max: 16}
+      "05": {description: Uttarakhand, pin_min: 24, pin_max: 26}
+      "06": {description: Haryana, pin_min: 12, pin_max: 13}
+      "07": {description: Delhi, pin_min: 11, pin_max: 11}
+      "08": {description: Rajasthan, pin_min: 30, pin_max: 34}
+      "09": {description: Uttar Pradesh, pin_min: 20, pin_max: 28}
+      "10": {description: Bihar, pin_min: 80, pin_max: 85}
+      "11": {description: Sikkim, pin_min: 73, pin_max: 73}
+      "12": {description: Arunachal Pradesh, pin_min: 78, pin_max: 79}
+      "13": {description: Nagaland, pin_min: 79, pin_max: 79}
+      "14": {description: Manipur, pin_min: 79, pin_max: 79}
+      "15": {description: Mizoram, pin_min: 79, pin_max: 79}
+      "16": {description: Tripura, pin_min: 72, pin_max: 79}
+      "17": {description: Meghalaya, pin_min: 79, pin_max: 79}
+      "18": {description: Assam, pin_min: 78, pin_max: 79}
+      "19": {description: West Bengal, pin_min: 70, pin_max: 74}
+      "20": {description: Jharkhand, pin_min: 81, pin_max: 83}
+      "21": {description: Orissa, pin_min: 75, pin_max: 77}
+      "22": {description: Chhattisgarh, pin_min: 46, pin_max: 49}
+      "23": {description: Madhya Pradesh, pin_min: 45, pin_max: 48}
+      "24": {description: Gujarat, pin_min: 36, pin_max: 39}
+      "25": {description: Dadra & Nagar Haveli and Daman & Diu, pin_min: 36, pin_max: 39}
+      "27": {description: Maharashtra, pin_min: 40, pin_max: 44}
+      "28": {description: Andhra Pradesh, pin_min: 50, pin_max: 56}
+      "29": {description: Karnataka, pin_min: 53, pin_max: 59}
+      "30": {description: Goa, pin_min: 40, pin_max: 40}
+      "31": {description: Lakshadweep, pin_min: 67, pin_max: 68}
+      "32": {description: Kerala, pin_min: 67, pin_max: 69}
+      "33": {description: Tamil Nadu, pin_min: 53, pin_max: 67}
+      "34": {description: Pondicherry, pin_min: 53, pin_max: 67}
+      "35": {description: Andaman & Nicobar Islands, pin_min: 74, pin_max: 74}
+      "36": {description: Telangana, pin_min: 50, pin_max: 56}
+      "37": {description: Ladakh, pin_min: 18, pin_max: 19}
+      "77": {description: Foreign Address}
+      "99": {description: APO Address, pin_min: 90, pin_max: 99}
+
+  account_type:
+    description: Account type (TL.04 / TL.19, Appendix D). Inactive = reserved for future use
+    codes:
+      "00": Other
+      "01": Auto Loan (Personal)
+      "02": Housing Loan
+      "03": Property Loan
+      "04": Loan Against Shares / Securities
+      "05": Personal Loan
+      "06": Consumer Loan
+      "07": Gold Loan
+      "08": Education Loan
+      "09": Loan to Professional
+      "10": Credit Card
+      "11": Leasing
+      "12": Overdraft
+      "13": Two-Wheeler Loan
+      "14": Non-Funded Credit Facility
+      "15": Loan Against Bank Deposits
+      "16": Fleet Card
+      "17": Commercial Vehicle Loan
+      "18": {description: Telco - Wireless, active: false}
+      "19": {description: Telco - Broadband, active: false}
+      "20": {description: Telco - Landline, active: false}
+      "21": Seller Financing
+      "23": GECL Loan Secured
+      "24": GECL Loan Unsecured
+      "25": Working Capital Loan
+      "26": Commercial Equipment Loan
+      "27": Agriculture Loan
+      "28": Overdraft against FD
+      "29": Overdraft against Shares / Securities
+      "30": Overdraft against Collateral
+      "31": Secured Credit Card
+      "32": Used Car Loan
+      "33": Construction Equipment Loan
+      "34": Tractor Loan
+      "35": Corporate Credit Card
+      "36": Kisan Credit Card
+      "37": Loan on Credit Card
+      "38": Prime Minister Jan Dhan Yojana - Overdraft
+      "39": Mudra Loans - Shishu / Kishor / Tarun
+      "40": Microfinance - Business Loan
+      "41": Microfinance - Personal Loan
+      "42": Microfinance - Housing Loan
+      "43": Microfinance - Others
+      "44": Pradhan Mantri Awas Yojana - CLSS
+      "45": P2P Personal Loan
+      "46": P2P Auto Loan
+      "47": P2P Education Loan
+      "50": Business Loan - Secured
+      "51": Business Loan - General
+      "52": Business Loan - Priority Sector - Small Business
+      "53": Business Loan - Priority Sector - Agriculture
+      "54": Business Loan - Priority Sector - Others
+      "55": Business Non-Funded Credit Facility - General
+      "56": Business Non-Funded Credit Facility - Priority Sector - Small Business
+      "57": Business Non-Funded Credit Facility - Priority Sector - Agriculture
+      "58": Business Non-Funded Credit Facility - Priority Sector - Others
+      "59": Business Loan Against Bank Deposits
+      "61": Business Loan - Unsecured
+      "69": Short Term Personal Loan
+      "70": Priority Sector - Gold Loan
+      "71": Temporary Overdraft
+
+  card_account_type:
+    description: Card account types that follow card rules (credit/cash limit, interest in balance, no EMI)
+    codes: {"10": Credit Card, "16": Fleet Card, "31": Secured Credit Card, "35": Corporate Credit Card}
+
+  ownership_indicator:
+    description: Ownership indicator (TL.05 / TL.20)
+    codes: {"1": Individual, "2": Authorised User, "3": Guarantor, "4": Joint, "5": Deceased}
+
+  suit_filed_status:
+    description: Suit filed / wilful default (TL.21)
+    codes: {"00": No Suit Filed, "01": Suit Filed, "02": Wilful Default, "03": Suit Filed (Wilful Default)}
+
+  credit_facility_status:
+    description: Credit facility status (TL.22, Appendix F)
+    codes:
+      "00": Restructured Loan
+      "01": Restructured Loan (Govt. Mandated)
+      "02": Written-off
+      "03": Settled
+      "04": Post (WO) Settled
+      "05": Account Sold
+      "06": Written Off and Account Sold
+      "07": Account Purchased
+      "08": Account Purchased and Written Off
+      "09": Account Purchased and Settled
+      "10": Account Purchased and Restructured
+      "11": Restructured due to Natural Calamity
+      "12": Restructured due to COVID-19
+      "13": Post Write Off Closed
+      "14": Restructured & Closed
+      "15": Auctioned & Settled
+      "16": Repossessed & Settled
+      "17": Guarantee Invoked
+      "99": Clear existing status
+
+  asset_classification:
+    description: Asset classification (TL.26)
+    codes: {"01": Standard, "02": Substandard, "03": Doubtful, "04": Loss, "05": Special Mention Account}
+
+  collateral_type:
+    description: Type of collateral (TL.35)
+    codes: {"00": None, "01": Property, "02": Gold, "03": Shares, "04": Savings Account & FD,
+            "05": Multiple Securities, "06": Others}
+
+  payment_frequency:
+    description: Payment frequency (TL.44)
+    codes: {"01": Weekly, "02": Fortnightly, "03": Monthly, "04": Quarterly, "05": Bullet, "06": Daily,
+            "07": Half-yearly, "08": Yearly, "09": On-demand}
+
+  occupation:
+    description: Occupation (TL.46)
+    codes: {"01": Salaried, "02": Self-Employed Professional, "03": Self-Employed, "04": Others}
+
+  income_basis:
+    description: Net / gross income indicator (TL.48)
+    codes: {"G": Gross, "N": Net}
+
+  income_period:
+    description: Monthly / annual income indicator (TL.49)
+    codes: {"M": Monthly, "A": Annual}
+
+entities:
+  party:
+    table: c_party
+    description: One borrower (individual)
+    indexes: [[party_key]]
+    columns:
+      party_key:        {type: string, length: 50, required: true, description: Source borrower key}
+      full_name:        {type: string, length: 200, required: true, ucrf: PN.01-05, description: Full name. Formatter splits into 26-char fields}
+      birth_date:       {type: date, ucrf: PN.07}
+      gender:           {type: code, code_list: gender, ucrf: PN.08}
+      occupation:       {type: code, code_list: occupation, ucrf: TL.46}
+      income:           {type: decimal, ucrf: TL.47}
+      income_basis:     {type: code, code_list: income_basis, ucrf: TL.48}
+      income_period:    {type: code, code_list: income_period, ucrf: TL.49}
+
+  party_identifier:
+    table: c_party_identifier
+    description: One identity document of a borrower
+    indexes: [[party_key]]
+    columns:
+      party_key:        {type: string, length: 50, required: true}
+      id_type:          {type: code, code_list: id_type, required: true, ucrf: ID.01}
+      id_number:        {type: string, length: 50, required: true, ucrf: ID.02, description: As held at source. Delimiters stripped by validation/formatter}
+      issue_date:       {type: date, ucrf: ID.03}
+      expiry_date:      {type: date, ucrf: ID.04}
+
+  party_phone:
+    table: c_party_phone
+    description: One telephone entry of a borrower
+    indexes: [[party_key]]
+    columns:
+      party_key:        {type: string, length: 50, required: true}
+      phone_number:     {type: string, length: 60, required: true, ucrf: PT.01, description: May hold several numbers when type is 00}
+      extension:        {type: string, length: 10, ucrf: PT.02}
+      phone_type:       {type: code, code_list: phone_type, ucrf: PT.03}
+      priority:         {type: integer, description: 1 = first reported. Lower sorts first}
+
+  party_email:
+    table: c_party_email
+    description: One e-mail address of a borrower
+    indexes: [[party_key]]
+    columns:
+      party_key:        {type: string, length: 50, required: true}
+      email:            {type: string, length: 100, required: true, ucrf: EC.01}
+      priority:         {type: integer}
+
+  party_address:
+    table: c_party_address
+    description: One address of a borrower
+    indexes: [[party_key]]
+    columns:
+      party_key:        {type: string, length: 50, required: true}
+      address_line_1:   {type: string, length: 200, required: true, ucrf: PA.01, description: Lines are re-fitted to 40 chars by the formatter without splitting words}
+      address_line_2:   {type: string, length: 200, ucrf: PA.02}
+      address_line_3:   {type: string, length: 200, ucrf: PA.03}
+      address_line_4:   {type: string, length: 200, ucrf: PA.04}
+      address_line_5:   {type: string, length: 200, ucrf: PA.05}
+      state_code:       {type: code, code_list: state_code, ucrf: PA.06}
+      pin_code:         {type: string, length: 20, ucrf: PA.07, description: As held at source. Non-digits stripped by validation/formatter}
+      address_category: {type: code, code_list: address_category, ucrf: PA.08}
+      residence_code:   {type: code, code_list: residence_code, ucrf: PA.09}
+      priority:         {type: integer}
+
+  account:
+    table: c_account
+    description: One credit facility
+    indexes: [[account_key]]
+    columns:
+      account_key:              {type: string, length: 50, required: true, description: Source account key}
+      account_number:           {type: string, length: 50, required: true, ucrf: TL.03}
+      account_type:             {type: code, code_list: account_type, required: true, ucrf: TL.04}
+      date_opened:              {type: date, required: true, ucrf: TL.08}
+      date_last_payment:        {type: date, ucrf: TL.09}
+      date_closed:              {type: date, ucrf: TL.10}
+      date_reported:            {type: date, ucrf: TL.11, description: Defaults to the request as-of date}
+      high_credit_amount:       {type: decimal, required: true, ucrf: TL.12, description: "Sanctioned amount, or highest credit used for card types"}
+      current_balance:          {type: decimal, required: true, ucrf: TL.13, description: Signed. Negative = credit balance}
+      amount_overdue:           {type: decimal, ucrf: TL.14}
+      days_past_due:            {type: integer, ucrf: TL.15}
+      suit_filed_status:        {type: code, code_list: suit_filed_status, ucrf: TL.21}
+      credit_facility_status:   {type: code, code_list: credit_facility_status, ucrf: TL.22}
+      asset_classification:     {type: code, code_list: asset_classification, ucrf: TL.26}
+      collateral_value:         {type: decimal, ucrf: TL.34}
+      collateral_type:          {type: code, code_list: collateral_type, ucrf: TL.35}
+      credit_limit:             {type: decimal, ucrf: TL.36}
+      cash_limit:               {type: decimal, ucrf: TL.37}
+      rate_of_interest:         {type: decimal, precision: 10, scale: 4, ucrf: TL.38}
+      repayment_tenure:         {type: integer, ucrf: TL.39, description: Months}
+      emi_amount:               {type: decimal, ucrf: TL.40}
+      written_off_total:        {type: decimal, ucrf: TL.41}
+      written_off_principal:    {type: decimal, ucrf: TL.42}
+      settlement_amount:        {type: decimal, ucrf: TL.43}
+      payment_frequency:        {type: code, code_list: payment_frequency, ucrf: TL.44}
+      actual_payment_amount:    {type: decimal, ucrf: TL.45}
+      old_member_code:          {type: string, length: 10, ucrf: TL.16}
+      old_member_short_name:    {type: string, length: 16, ucrf: TL.17}
+      old_account_number:       {type: string, length: 50, ucrf: TL.18}
+      old_account_type:         {type: code, code_list: account_type, ucrf: TL.19}
+      old_ownership_indicator:  {type: code, code_list: ownership_indicator, ucrf: TL.20}
+
+  account_holder:
+    table: c_account_holder
+    description: Link of a borrower to an account. Each row becomes one UCRF record
+    indexes: [[account_key], [party_key]]
+    columns:
+      account_key:          {type: string, length: 50, required: true}
+      party_key:            {type: string, length: 50, required: true}
+      ownership_indicator:  {type: code, code_list: ownership_indicator, required: true, ucrf: TL.05}
+
+  account_history:
+    table: c_account_history
+    description: One month of account history (initial historical load only)
+    indexes: [[account_key]]
+    columns:
+      account_key:            {type: string, length: 50, required: true}
+      history_month:          {type: date, required: true, ucrf: TH.01, description: Any day of the month. Formatter resets the day to 01}
+      days_past_due:          {type: integer, ucrf: TH.02}
+      asset_classification:   {type: code, code_list: asset_classification, ucrf: TH.02, description: Used when days_past_due is absent}
+      amount_overdue:         {type: decimal, ucrf: TH.03}
+      high_credit_amount:     {type: decimal, ucrf: TH.04}
+      credit_limit:           {type: decimal, ucrf: TH.05}
+      cash_limit:             {type: decimal, ucrf: TH.06}
+      current_balance:        {type: decimal, required: true, ucrf: TH.07}
+      date_last_payment:      {type: date, ucrf: TH.08}
+      actual_payment_amount:  {type: decimal, ucrf: TH.09}
+
+  extension_attribute:
+    table: c_extension_attribute
+    description: NBFC-specific values for custom validation rules. Never written to bureau files
+    indexes: [[entity, entity_key]]
+    columns:
+      entity:       {type: string, length: 30, required: true, description: party or account}
+      entity_key:   {type: string, length: 50, required: true}
+      attr_name:    {type: string, length: 64, required: true}
+      attr_value:   {type: string, length: 500}

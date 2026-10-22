@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}New request · Bureau Submissions{% endblock %}
+{% block crumb %}New request{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>New request</h1>
+    <p class="subtitle">Every submission starts with a validation. Review its findings and exceptions, then generate the bureau files from the batch page.</p>
+  </div>
+</div>
+<form method="post" class="panel">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="row">
+    <div>
+      <label for="tenant_id">NBFC</label>
+      <select id="tenant_id" name="tenant_id" required>
+        <option value="">Select…</option>
+        {% for t in tenants %}<option value="{{ t.tenant_id }}" {{ 'selected' if t.tenant_id == form.tenant_id }}>{{ t.display_name }} ({{ t.tenant_id }})</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="as_of_date">As-of date</label>
+      <input type="date" id="as_of_date" name="as_of_date" value="{{ form.as_of_date }}" required>
+    </div>
+    <div>
+      <label for="reporting_cycle">Reporting cycle</label>
+      <select id="reporting_cycle" name="reporting_cycle">
+        <option value="">—</option>
+        {% for c in cycles %}<option value="{{ c.value }}" {{ 'selected' if c.value == form.reporting_cycle }}>{{ c.value }} · {{ c.name | replace('_', ' ') | title }}</option>{% endfor %}
+      </select>
+    </div>
+  </div>
+
+  <label>Submission types</label>
+  <div class="choices">
+    {% for t in all_types %}
+      {% set on = t in types %}
+      <label class="{{ '' if on else 'disabled' }}">
+        <input type="checkbox" name="submission_types" value="{{ t.value }}" {{ 'checked' if t.value in form.submission_types and on }} {{ '' if on else 'disabled' }}>
+        {{ t.value | title }}{{ '' if on else ' (coming later)' }}
+      </label>
+    {% endfor %}
+  </div>
+
+  <p style="margin-top:20px"><button type="submit">Queue validation</button></p>
+</form>
+{% endblock %}

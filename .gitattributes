@@ -1,0 +1,3 @@
+# Keep LF everywhere: shell scripts, crontab and Dockerfile run on Linux and break with CRLF
+* text=auto eol=lf
+*.ps1 text eol=crlf

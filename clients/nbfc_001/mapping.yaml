@@ -1,0 +1,3 @@
+# nbfc_001: standard LMS layout, nothing to override.
+canonical_version: "1.0"
+extends: ../_base/mapping.yaml

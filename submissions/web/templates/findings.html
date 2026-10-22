@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Findings #{{ snap.snapshot_id }} · Bureau Submissions{% endblock %}
+{% block crumb %}<a href="{{ url_for('ui.batches') }}">Submission tracker</a> <span>/</span>
+  {% if snap.batch_id %}<a href="{{ url_for('ui.batch', batch_id=snap.batch_id) }}" class="mono">{{ snap.batch_id }}</a> <span>/</span>{% endif %}
+  Findings{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Findings · snapshot #{{ snap.snapshot_id }}</h1>
+    <p class="subtitle">{{ snap.tenant_id }} · {{ snap.submission_type.value | title }} · as of {{ snap.as_of_date | d }}
+      · <span class="badge b-{{ snap.status.value }}">{{ snap.status.value | title }}</span>
+      <span class="badge b-ACCEPTED">{{ records.get('ACCEPTED', 0) }} accepted</span>
+      <span class="badge b-REJECTED">{{ records.get('REJECTED', 0) }} rejected</span></p>
+  </div>
+  <a class="button secondary" href="{{ url_for('ui.findings_csv', snapshot_id=snap.snapshot_id, **request.args) }}">Download CSV</a>
+</div>
+
+<div class="panel flush">
+  <div class="panel-head"><h2>Summary by rule</h2></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Rule</th><th>Outcome</th><th class="num">Findings</th></tr></thead>
+    <tbody>{% for s in summary %}
+      <tr><td class="mono"><a href="{{ url_for('ui.findings', snapshot_id=snap.snapshot_id, rule_id=s.rule_id) }}">{{ s.rule_id }}</a></td>
+          <td><span class="badge b-{{ s.outcome }}">{{ s.outcome }}</span></td><td class="num">{{ s.finding_count }}</td></tr>
+    {% else %}<tr><td colspan="3" class="muted">No findings.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</div>
+
+<form method="get" class="panel row">
+  <div><label for="rule_id">Rule</label>
+    <select id="rule_id" name="rule_id"><option value="">All</option>
+      {% for s in summary | map(attribute='rule_id') | unique %}<option {{ 'selected' if s == flt.rule_id }}>{{ s }}</option>{% endfor %}
+    </select></div>
+  <div><label for="outcome">Outcome</label>
+    <select id="outcome" name="outcome"><option value="">All</option>
+      {% for o in outcomes %}<option {{ 'selected' if o == flt.outcome }}>{{ o }}</option>{% endfor %}
+    </select></div>
+  <div><label for="account_key">Account</label><input type="text" id="account_key" name="account_key" value="{{ flt.account_key or '' }}" size="12"></div>
+  <div><label for="party_key">Customer</label><input type="text" id="party_key" name="party_key" value="{{ flt.party_key or '' }}" size="12"></div>
+  <div><button type="submit">Filter</button></div>
+</form>
+
+<div class="panel flush">
+  <div class="panel-head"><h2>Findings ({{ total }})</h2></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Account</th><th>Customer</th><th>Rule</th><th>Outcome</th><th>Segment / field</th><th>Value</th><th>Message</th></tr></thead>
+    <tbody>{% for f in rows %}
+      <tr><td class="mono">{{ f.account_key or '' }}</td><td class="mono">{{ f.party_key or '' }}</td>
+          <td class="mono">{{ f.rule_id }}</td><td><span class="badge b-{{ f.outcome }}">{{ f.outcome }}</span></td>
+          <td>{{ f.segment or '' }}{{ ' · ' ~ f.field if f.field }}</td><td class="mono">{{ f.value or '' }}</td><td>{{ f.message }}</td></tr>
+    {% else %}<tr><td colspan="7" class="muted">No findings match.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</div>
+{% if pages > 1 %}
+<div class="pager">
+  {% set args = request.args.to_dict() %}
+  {% if page > 1 %}{% set _ = args.update(page=page - 1) %}<a href="{{ url_for('ui.findings', snapshot_id=snap.snapshot_id, **args) }}">Previous</a>{% endif %}
+  <span class="muted">Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}{% set _ = args.update(page=page + 1) %}<a href="{{ url_for('ui.findings', snapshot_id=snap.snapshot_id, **args) }}">Next</a>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

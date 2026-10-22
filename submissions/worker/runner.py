@@ -1,0 +1,149 @@
+"""Polling worker: claims submission_request rows and runs them through their pipeline.
+
+Usage:  python -m submissions.worker [--once] [--poll 5] [--id worker-1]
+"""
+
+from __future__ import annotations
+
+import logging
+import socket
+import time
+from dataclasses import dataclass, field
+
+from submissions.bureaus import BureauRepository
+from submissions.enums import RunMode, SnapshotStatus
+from submissions.ops.heartbeat import Heartbeat
+from submissions.ops.recovery import RecoverySettings, recover
+from submissions.pipeline import Services, get_pipeline
+from submissions.requests import RequestRepository, RequestResult, SubmissionRequest
+from submissions.snapshot import Snapshot, SnapshotExistsError
+from submissions.tenants import Tenant, TenantRepository
+from submissions.validation.engine import ValidationResult, snapshot_result
+
+log = logging.getLogger(__name__)
+
+
+class JobFailed(Exception):
+    """Expected, user-facing failure of one row (recorded on the row, no stack trace)."""
+
+
+class SnapshotBusy(Exception):
+    """The batch's snapshot is being built by another worker; retry the row later."""
+
+
+@dataclass
+class Worker:
+    services: Services
+    requests: RequestRepository
+    tenants: TenantRepository
+    bureaus: BureauRepository
+    worker_id: str = f"{socket.gethostname()}-worker"
+    recovery: RecoverySettings = field(default_factory=RecoverySettings)
+    heartbeat: Heartbeat | None = None
+
+    # ------------------------------------------------------------------ loop
+    def run_once(self) -> int:
+        """Recover stuck work, then process pending rows until none are left (or one has to wait)."""
+        if self.heartbeat:
+            self.heartbeat.beat()
+        recover(self.services.app_engine, self.requests, self.services.snapshots, self.recovery)
+        processed = 0
+        while (req := self.requests.claim_next(self.worker_id)) is not None:
+            if not self.process(req):
+                break                       # released: let the snapshot builder finish first
+            processed += 1
+            if self.heartbeat:
+                self.heartbeat.beat(processed=1)
+        return processed
+
+    def run_forever(self, poll_seconds: float = 5.0) -> None:
+        log.info("Worker %s polling every %ss", self.worker_id, poll_seconds)
+        while True:
+            try:
+                self.run_once()
+            except Exception:  # noqa: BLE001  keep the worker alive; the row itself was marked failed
+                log.exception("Worker loop error")
+            time.sleep(poll_seconds)
+
+    # ------------------------------------------------------------------ one row
+    def process(self, req: SubmissionRequest) -> bool:
+        """Run one claimed row. Returns False if it was released to retry later."""
+        log.info("Request %s: %s %s %s %s", req.request_id, req.tenant_id, req.run_mode, req.submission_type,
+                 req.bureau_code or "")
+        try:
+            tenant = self._tenant(req)
+            snapshot, result = self._snapshot(req, tenant)
+            if req.run_mode is RunMode.VALIDATE:
+                outcome = RequestResult(total_records=result.records, accepted_records=result.accepted,
+                                        rejected_records=result.rejected)
+            else:
+                outcome = self._generate(req, tenant, snapshot, result)
+            self.requests.mark_succeeded(req.request_id, outcome)
+            return True
+        except SnapshotBusy as exc:
+            log.info("Request %s released: %s", req.request_id, exc)
+            self.requests.release(req.request_id)
+            return False
+        except JobFailed as exc:
+            self.requests.mark_failed(req.request_id, str(exc))
+        except Exception as exc:  # noqa: BLE001  any other error fails this row only
+            log.exception("Request %s failed", req.request_id)
+            self.requests.mark_failed(req.request_id, f"{type(exc).__name__}: {exc}")
+        return True
+
+    def _tenant(self, req: SubmissionRequest) -> Tenant:
+        try:
+            return self.tenants.get_active(req.tenant_id)
+        except Exception as exc:
+            raise JobFailed(str(exc)) from exc
+
+    def _snapshot(self, req: SubmissionRequest, tenant: Tenant) -> tuple[Snapshot, ValidationResult]:
+        snapshots = self.services.snapshots
+        if req.snapshot_id is not None:                         # "generate from this validation"
+            snap = snapshots.get(req.snapshot_id)
+            if (snap.tenant_id, snap.submission_type, snap.as_of_date) != (
+                    req.tenant_id, req.submission_type, req.as_of_date):
+                raise JobFailed(f"Snapshot {snap.snapshot_id} belongs to {snap.tenant_id} {snap.submission_type} "
+                                f"{snap.as_of_date}, not to this request")
+            if snap.status is not SnapshotStatus.VALIDATED:
+                raise JobFailed(f"Snapshot {snap.snapshot_id} is {snap.status}, not VALIDATED")
+            return snap, snapshot_result(self.services.app_engine, snap.snapshot_id)
+
+        pipeline = get_pipeline(req.submission_type)
+        if pipeline is None:
+            raise JobFailed(f"{req.submission_type} submissions are not supported yet")
+        try:
+            snapshot_id, result = pipeline.build_snapshot(self.services, tenant, req, self.worker_id)
+        except SnapshotExistsError as exc:                      # shared with the other rows of this batch
+            snap = snapshots.get(exc.snapshot_id)
+            if snap.status is SnapshotStatus.FAILED and req.attempt_count > 1:
+                # a retried row: the failure belongs to an earlier attempt, so rebuild from scratch
+                log.info("Request %s: rebuilding failed snapshot %s", req.request_id, snap.snapshot_id)
+                snapshots.delete(snap.snapshot_id)
+                return self._snapshot(req, tenant)
+            if snap.status is SnapshotStatus.FAILED:
+                raise JobFailed(f"Snapshot {snap.snapshot_id} failed: {snap.error_message}") from None
+            if snap.status is not SnapshotStatus.VALIDATED:
+                raise SnapshotBusy(f"snapshot {snap.snapshot_id} is {snap.status}") from None
+            self.requests.assign_snapshot(req.request_id, snap.snapshot_id)
+            return snap, snapshot_result(self.services.app_engine, snap.snapshot_id)
+        except Exception as exc:
+            raise JobFailed(f"Snapshot build failed: {exc}") from exc
+        self.requests.assign_snapshot(req.request_id, snapshot_id)
+        return snapshots.get(snapshot_id), result
+
+    def _generate(self, req: SubmissionRequest, tenant: Tenant, snapshot: Snapshot,
+                  result: ValidationResult) -> RequestResult:
+        if result.file_rejected:
+            raise JobFailed("Validation found a REJECT_FILE problem. No file can be generated from this snapshot")
+        pipeline = get_pipeline(req.submission_type)
+        if pipeline is None:
+            raise JobFailed(f"{req.submission_type} submissions are not supported yet")
+        try:
+            bureau = self.bureaus.get(req.tenant_id, req.bureau_code, req.submission_type)
+        except Exception as exc:
+            raise JobFailed(str(exc)) from exc
+        try:
+            return pipeline.generate_file(self.services, tenant, req, snapshot, bureau)
+        except Exception as exc:
+            raise JobFailed(str(exc)) from exc

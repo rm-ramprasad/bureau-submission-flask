@@ -1,0 +1,28 @@
+# Mapping for NBFC <tenant_id>. Created by `python -m submissions.onboarding.new_tenant`.
+#
+# This file extends the base LMS mapping and lists ONLY what differs for this NBFC.
+# Workflow (see ONBOARDING.md):
+#   1. python -m submissions.onboarding.introspect --schema <schema>   -> which columns to override
+#   2. edit this file
+#   3. python -m submissions.adapters.check clients/<tenant_id>/mapping.yaml --schema <schema>
+#   4. python -m submissions.onboarding.dry_run --tenant <tenant_id>
+#
+# Format reference: submissions/adapters/mapping.py. Quote codes that YAML reads as booleans ("ON", "OFF", "YES", "NO").
+canonical_version: "1.0"
+extends: ../_base/mapping.yaml
+
+# lookups:                          # client code -> UCRF code; merged into the base lookups
+#   account_type: {HOME: "02", PERS: "05"}
+#   gender: {MALE: "2", FEMALE: "1"}
+
+# entities:
+#   party:
+#     columns:
+#       birth_date: b.dob            # a renamed column
+#   account:
+#     from: "{schema}.account_details a LEFT JOIN {schema}.loan_ext x ON x.loan_id = a.loan_id"
+#     columns:
+#       days_past_due: x.overdue_days
+#   extension_attribute:             # NBFC-specific values for custom validation rules
+#     from: "{schema}.loan_ext x"
+#     columns: {entity: "'account'", entity_key: x.loan_id, attr_name: "'scheme_code'", attr_value: x.scheme_code}

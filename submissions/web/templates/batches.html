@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Submission tracker · Bureau Submissions{% endblock %}
+{% block crumb %}Submission tracker{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Submission tracker</h1>
+    <p class="subtitle">Validation runs and generated files{{ ' for ' ~ selected_tenant if selected_tenant else ' across all NBFCs' }}. Times are UTC.</p>
+  </div>
+</div>
+<div class="panel flush">
+  {% if batches %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Requested</th><th>NBFC</th><th>As of</th><th>Mode</th><th>Types</th><th>Bureaus</th><th>Status</th><th>By</th></tr></thead>
+    <tbody>
+    {% for b in batches %}
+      <tr>
+        <td><a href="{{ url_for('ui.batch', batch_id=b.batch_id) }}">{{ b.requested_at | dt }}</a></td>
+        <td>{{ b.tenant_id }}</td>
+        <td>{{ b.as_of_date | d }}</td>
+        <td>{{ 'Validate' if b.run_mode.value == 'VALIDATE' else 'Generate files' }}</td>
+        <td>{{ b.submission_types | join(', ') | title }}</td>
+        <td>{{ b.bureau_codes | join(', ') if b.bureau_codes else '—' }}</td>
+        <td><span class="badge b-{{ b.status.value }}">{{ b.status.value | title }}</span></td>
+        <td class="muted">{{ b.requested_by or '' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  <div class="panel-body muted">No runs yet. <a href="{{ url_for('ui.new_run') }}">Start a validation</a>.</div>
+  {% endif %}
+</div>
+{% endblock %}

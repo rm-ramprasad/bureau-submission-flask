@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Audit · Bureau Submissions{% endblock %}
+{% block crumb %}Audit{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Audit trail</h1>
+    <p class="subtitle">Who did what{{ ' for ' ~ selected_tenant if selected_tenant else '' }}. Latest 200 events, UTC.</p>
+  </div>
+</div>
+<div class="panel flush">
+  <div class="table-wrap"><table>
+    <thead><tr><th>When</th><th>Who</th><th>Action</th><th>NBFC</th><th>Target</th><th>Details</th></tr></thead>
+    <tbody>{% for e in events %}
+      <tr><td>{{ e.occurred_at | dt }}</td><td>{{ e.actor }}</td><td class="mono">{{ e.action }}</td>
+          <td>{{ e.tenant_id or '' }}</td><td class="mono">{{ e.target or '' }}</td><td class="mono muted">{{ e.details or '' }}</td></tr>
+    {% else %}<tr><td colspan="6" class="muted">No events yet.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</div>
+{% endblock %}

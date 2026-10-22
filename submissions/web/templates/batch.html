@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Batch {{ batch_id }} · Bureau Submissions{% endblock %}
+{% block crumb %}<a href="{{ url_for('ui.batches') }}">Submission tracker</a> <span>/</span> <span class="mono">{{ batch_id }}</span>{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ 'Validation' if rows[0].run_mode.value == 'VALIDATE' else 'File generation' }} · {{ tenant.display_name }}</h1>
+    <p class="subtitle">As of {{ rows[0].as_of_date | d }} · batch <span class="mono">{{ batch_id }}</span>
+      · requested {{ rows[0].requested_at | dt }} UTC by {{ rows[0].requested_by or '—' }}
+      {% if refreshing %}· <strong>refreshing every 5 s</strong>{% endif %}</p>
+  </div>
+</div>
+
+<div class="panel flush">
+  <div class="table-wrap"><table>
+    <thead><tr><th>#</th><th>Type</th><th>Bureau</th><th>Status</th><th class="num">Records</th><th class="num">Accepted</th><th class="num">Rejected</th><th>Snapshot</th><th>Output</th><th></th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td class="mono">{{ r.request_id }}</td>
+        <td>{{ r.submission_type.value | title }}</td>
+        <td>{{ r.bureau_code.value if r.bureau_code else '—' }}</td>
+        <td><span class="badge b-{{ r.status.value }}">{{ r.status.value | title }}</span>
+          {% if r.attempt_count > 1 %}<span class="muted">attempt {{ r.attempt_count }}</span>{% endif %}</td>
+        <td class="num">{{ r.total_records if r.total_records is not none else '' }}</td>
+        <td class="num">{{ r.accepted_records if r.accepted_records is not none else '' }}</td>
+        <td class="num">{{ r.rejected_records if r.rejected_records is not none else '' }}</td>
+        <td>{% if r.snapshot_id %}<a href="{{ url_for('ui.findings', snapshot_id=r.snapshot_id) }}">#{{ r.snapshot_id }} findings</a>{% endif %}</td>
+        <td>
+          {% if r.status.value == 'SUCCEEDED' and r.output_file_path %}<a href="{{ url_for('ui.download', request_id=r.request_id, kind='file') }}">File</a>{% endif %}
+          {% if r.status.value == 'SUCCEEDED' and r.exceptions_file_path %} · <a href="{{ url_for('ui.download', request_id=r.request_id, kind='exceptions') }}">Exceptions</a>{% endif %}
+          {% if r.output_file_path %}<div class="hint mono" title="Where this file is stored">{{ r.output_file_path }}</div>{% endif %}
+        </td>
+        <td>
+          {% if r.status.value == 'PENDING' %}
+            <form method="post" action="{{ url_for('ui.cancel', request_id=r.request_id) }}" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="small secondary">Cancel</button></form>
+          {% elif r.status.value in ('FAILED', 'CANCELLED') %}
+            <form method="post" action="{{ url_for('ui.retry', request_id=r.request_id) }}" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="small secondary">Retry</button></form>
+          {% endif %}
+        </td>
+      </tr>
+      {% if r.error_message %}<tr><td></td><td colspan="9" class="error-text">{{ r.error_message }}</td></tr>{% endif %}
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+
+{% for snapshot_id, info in snapshots.items() %}
+<div class="panel flush">
+  <div class="panel-head">
+    <h2>Snapshot #{{ snapshot_id }} <span class="badge b-{{ info.snapshot.status.value }}">{{ info.snapshot.status.value | title }}</span></h2>
+    <span><span class="badge b-ACCEPTED">{{ info.records.get('ACCEPTED', 0) }} accepted</span>
+      <span class="badge b-REJECTED">{{ info.records.get('REJECTED', 0) }} rejected</span></span>
+  </div>
+  {% if info.summary %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Rule</th><th>Outcome</th><th class="num">Findings</th></tr></thead>
+    <tbody>{% for s in info.summary %}
+      <tr><td class="mono"><a href="{{ url_for('ui.findings', snapshot_id=snapshot_id, rule_id=s.rule_id) }}">{{ s.rule_id }}</a></td>
+          <td><span class="badge b-{{ s.outcome }}">{{ s.outcome }}</span></td><td class="num">{{ s.finding_count }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+  <div class="panel-body">
+    <span class="muted">Mapping {{ info.snapshot.mapping_version }} · canonical {{ info.snapshot.canonical_version }}</span>
+    {% if info.summary %} · <a href="{{ url_for('ui.findings', snapshot_id=snapshot_id) }}">All findings</a> ·
+      <a href="{{ url_for('ui.findings_csv', snapshot_id=snapshot_id) }}">Download CSV</a>{% endif %}
+    {% if info.snapshot.error_message %}<p class="error-text">{{ info.snapshot.error_message }}</p>{% endif %}
+  </div>
+</div>
+{% endfor %}
+
+{% for r in generate_from %}
+<form method="post" action="{{ url_for('ui.generate_from_validation', batch_id=batch_id) }}" class="panel">
+  <h2>Generate files from this validation ({{ r.submission_type.value | title }})</h2>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="request_id" value="{{ r.request_id }}">
+  <p class="muted">Files are written from snapshot #{{ r.snapshot_id }}: exactly the data validated above.</p>
+  <div class="choices">
+    {% for b in bureau_options[r.request_id] %}
+      <label><input type="checkbox" name="bureau_codes" value="{{ b.value }}" checked> {{ b.value | replace('_', ' ') | title }}</label>
+    {% else %}<span class="muted">No active bureau profiles for this NBFC.</span>{% endfor %}
+  </div>
+  {% if bureau_options[r.request_id] %}<p><button type="submit">Generate files</button></p>{% endif %}
+</form>
+{% endfor %}
+{% endblock %}
