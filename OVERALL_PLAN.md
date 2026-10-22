@@ -131,26 +131,33 @@ Pipeline tables (`extract_snapshot`, `c_*`, `validation_rule`, `validation_polic
 5. **GENERATE row:** if the snapshot has a REJECT_FILE outcome, fail with that reason. Otherwise the formatter writes this bureau's file from accepted records, and the row records the file path and counts.
 6. The **batch page** shows each row's status, and for each snapshot the findings summary (by rule/outcome, drill-down, CSV export) and the Download buttons.
 
-**Workflow (always validate first, decision #17):** Validate → review findings → capture exclusions/overrides → **Re-validate** (the new snapshot applies them, and validation checks the adjusted data) → "Generate files from this validation".
+### 5.1 Request flow (decision 20; requirement, built 22-10-2026)
 
-### 5.1 Adjustment lifecycle (K.4–K.5)
+**Request → Exceptions → Validation → Files.** One request ID (`batch_id`) ties the steps together.
 
-1. **Capture.** On the Exceptions page, for an NBFC + as-of date + type, the user enters:
-   - **loan account numbers** and/or **customer IDs** to exclude (typed or pasted in bulk, or picked from a validated run's records);
-   - **overrides** per loan account for OD days, ledger balance, OD amount and settlement amount.
+| Step | Requirement |
+|---|---|
+| **1. Request** | The user picks NBFC, as-of date, submission type(s) and cycle, then clicks **Create request**. The request is created as **DRAFT**: the worker does not pick it up. The Exceptions step opens straight away. |
+| **2. Exceptions** | Optional. The user excludes **loan account numbers** and/or **customer IDs** (pasted in bulk; a customer exclusion takes all their loans, whole) and **overrides** OD days, ledger balance, OD amount or settlement amount per loan, each with an optional reason. Every exception is **tagged with the request ID**. Remove is a soft delete. Audit: `ADJUSTMENT_ADDED` / `ADJUSTMENT_REMOVED`. |
+| **3. Validation** | **Submit for validation** locks the exceptions (DRAFT → PENDING, audit `RUN_SUBMITTED`). The extract **leaves the excluded records out** and applies the overrides in SQL (§4), so **validation runs on the remaining records only**. Each exception then shows *Applied (n loans)* or *Not found* (WARN `UCRF.ADJ.NOT_FOUND`), with old → new values for overrides. |
+| **4. Files** | From the validated request: the user confirms "N loans excluded, M loans overridden" (required when there are any; audit `ADJUSTMENTS_CONFIRMED`), picks bureaus, and one file per bureau is generated from the validated snapshot. Each file's exceptions CSV ends with the applied adjustments. |
 
-   Each takes an optional reason. This writes `submission_adjustment` and audit `ADJUSTMENT_ADDED`.
-2. **Remove.** Soft delete, with audit `ADJUSTMENT_REMOVED`. History stays visible.
-3. **Apply.** A Validate run builds the snapshot with the adjust step (§4): extract → `v_snapshot_adjustment` → `snapshot_adjustment` (frozen, with old and new values) → delete/override → validate.
-   - Findings and record counts reflect the adjusted data.
-   - Each adjustment shows "applied to snapshot #…" or "not found".
-4. **Generate.** "Generate files from this validation":
-   - shows a confirmation: "N loans excluded, M overrides applied (validated in snapshot #…)";
-   - is **blocked with a 'Re-validate' prompt** if adjustments were added or removed after that snapshot was built, so the file never carries unvalidated changes;
-   - on confirm, writes audit `ADJUSTMENTS_CONFIRMED` (request IDs, snapshot, counts).
+**Rules:**
+- **Locked after submit:** exceptions cannot change once a request is submitted. More exceptions means a **new request** for the same date; there is no reopening and no carry-over.
+- **One open request:** a draft, pending or running request blocks a second one for the same NBFC, date and type until it is submitted, finishes or is **discarded** (draft → CANCELLED).
+- **Scheduled runs** (`ops.schedule`) skip step 2 and are created PENDING.
+- **Audit trail:** each snapshot keeps a frozen copy of the request's exceptions and their effects (`snapshot_adjustment`, `snapshot_adjustment_effect`). Retention purges them with the snapshot rows; the `audit_event` entries stay.
 
-   The file is written from the snapshot as is. The exceptions CSV gains "Excluded loans" and "Overrides (old → new)" sections.
-5. **Purged snapshots** keep their `snapshot_adjustment` rows only until retention removes the snapshot rows. The `audit_event` entries stay.
+**Request stage** (derived, used by the dashboard and tracker). A request is the validation batch plus the file generations made from its snapshot:
+
+| Stage | Rule |
+|---|---|
+| Awaiting exceptions | Validation rows are DRAFT. |
+| In progress | Validation rows are PENDING or RUNNING, or a file generation from it is PENDING or RUNNING. |
+| Validated, files pending | Validation SUCCEEDED, and no file has been generated from it yet. |
+| Completed | At least one file was generated successfully from its snapshot. |
+| Failed | Validation FAILED, or every file generation from it FAILED. |
+| Cancelled | Discarded draft or cancelled request. |
 
 ## 6. UI (target design, K.1–K.6)
 
@@ -171,15 +178,39 @@ Modelled on the reference mock ("BureauPulse"). Server-rendered Flask, plain CSS
 
 | Page | Content |
 |---|---|
-| **Dashboard** | **KPI cards:** submissions completed (GENERATE rows SUCCEEDED), records transmitted (sum written), accounts rejected by validation, accounts manually excluded. **Recent submissions** table: request, NBFC, bureau, type, as-of, records, excluded, status; links to the batch. **Bureaus panel:** files and records per bureau with the last date, as bar meters. **Highest-risk records:** rejected or excluded records with the highest DPD/overdue in the latest snapshots. Filtered by the NBFC selector. |
-| **New request** | **Validate only:** NBFC, as-of date, types, cycle. The Generate option is removed. |
-| **Exceptions** (adjustments) | For **NBFC + as-of + type**. **Exclude:** a box for loan account numbers and customer IDs (one per line, pasted in bulk), plus an optional reason; or pick rows from the latest validated run's records (search by account, customer, name, type, outcome, has findings). **Override:** loan account number + field (OD days / Ledger balance / OD amount / Settlement amount) + new value + optional reason, with the current value shown when a validated run exists. **Current adjustments:** kind, key, field, old → new, reason, by, when, status (*applied in snapshot #… / not found / pending re-validation*), Remove. **Actions:** "Re-validate with adjustments" (queues a Validate run) and "Generate files…" (enabled only when the latest validation includes every current adjustment). |
-| **Submission tracker** | Today's batch list with more filters (status, mode, bureau, date range) and paging. |
-| **Batch page** | Today's page plus an adjustments summary per snapshot (loans excluded, overrides old → new), with a link to Exceptions. |
+| **Dashboard** (K.2) | See §6.3. |
+| **New request** | NBFC, as-of date, types, cycle → **Create request** (DRAFT) → opens the request's Exceptions step (§5.1). |
+| **Exceptions** | **Menu page:** the requests awaiting exceptions (drafts) for the selected NBFC. **Request step** (`/batches/<id>/exceptions`): a 4-step indicator; Exclude (loan numbers or customer IDs, bulk paste, reason) and Override (loan, field, value, reason) forms while DRAFT; the request's exceptions with status (*Will apply / Applied (n loans) / Not found / Removed*) and old → new values; **Submit for validation** and **Discard request**. Read-only once submitted. |
+| **Submission tracker** | Today's batch list with more filters (stage, status, mode, bureau, NBFC, date range) and paging. Reached pre-filtered from the dashboard KPI cards. |
+| **Batch page** | Rows and statuses; a "Step 2 of 4" panel while DRAFT (Exceptions, Submit); per snapshot the adjustments summary (loans excluded, overridden, not found); the generate form with the adjustments confirmation. |
 | **Files** | Generated files in S3 (location shown): NBFC, bureau, file name, as-of, records written, loans excluded, overrides, rejected, size, created, Download file / exceptions. Purged files are shown as purged. |
-| **Findings** | Today's page, with **"Exclude loan"** and **"Override…"** actions on records that pre-fill the Exceptions page. |
+| **Findings** | Today's page, with **"Exclude loan"** and **"Override…"** actions on records. Because a validated request is locked, they add the exception to a **new draft request** for the same NBFC, date and type (created on first use, or the open draft if one exists). |
 | **Audit** | Today's page, adding filters for action and user, and adjustment events with their reasons and old → new values. |
 | **Later (K.7):** NBFCs & bureaus (read-only tenant and bureau profile view), Rules & policies (rule catalogue per NBFC, policy overrides editable with audit). |
+
+### 6.3 Dashboard (K.2 requirement, 22-10-2026)
+
+Answers "where does every request stand, and what needs attention?" It counts **requests** (§5.1 request stage), not raw rows.
+
+- **Filters:** the global NBFC selector (All or one NBFC) and a **period**: *This month* (default), *Last 30 days*, *Last 90 days*, *All time*. A request belongs to the period by its creation date.
+- **Request KPI cards** (one row, each clickable to the tracker filtered by that stage):
+
+  | Card | Value | Sub-text |
+  |---|---|---|
+  | Requests raised | all requests in the period | of which scheduled |
+  | Awaiting exceptions | stage *Awaiting exceptions* | oldest draft's age |
+  | In progress | stage *In progress* | oldest one's age (flags stuck work) |
+  | Validated, files pending | stage *Validated, files pending* | oldest one's age |
+  | Completed | stage *Completed* | completion rate = completed ÷ raised (excluding cancelled) |
+  | Failed | stage *Failed* | needs a retry or a new request |
+  | Cancelled | stage *Cancelled* | |
+
+- **Data KPI cards** (second row, same filters): records validated, acceptance rate (accepted ÷ validated), loans excluded, loans overridden, files generated, records submitted to bureaus.
+- **Needs attention** panel: failed requests; drafts older than 2 days; validated requests with no files after 2 days; in-progress work older than 2 hours; "No worker running". Each line links to its request.
+- **NBFC status** table (when *All NBFCs* is selected): one row per active NBFC with its latest request (as-of, stage, records, files by bureau, last activity), so missing or late month-end submissions stand out.
+- **Bureaus** panel: files and records per bureau in the period, with the last file date, as bar meters.
+- **Recent requests:** the last 10 requests with NBFC, as-of, type, stage, records, excluded, requested by and when; linked to the request.
+- **Later:** highest-risk records (rejected or excluded loans with the highest DPD / overdue).
 
 ## 7. Code layout
 
@@ -304,7 +335,7 @@ tests/
   - sidebar navigation (MAIN / REPORTS / ADMIN), top bar with breadcrumb, global NBFC selector (session) and "+ New request";
   - worker status and user in the sidebar footer; restyled components (cards, tables, badges, meters);
   - existing pages moved into the new shell.
-- [ ] K.2 **Dashboard:** KPI cards, recent submissions, bureaus panel, highest-risk records; NBFC-filtered.
+- [ ] K.2 **Dashboard** (§6.3): request-stage KPI cards (raised, awaiting exceptions, in progress, validated-files pending, completed, failed, cancelled) with period filter and click-through; data KPIs; Needs attention; NBFC status; bureaus; recent requests. NBFC-filtered.
 - [ ] K.3 **Submission tracker:** filters (status, mode, bureau, date range) and paging. **Files** page.
 - [x] K.0 **Validate only:**
   - remove direct GENERATE from the New request form and the scheduler (`--mode`);
@@ -321,7 +352,7 @@ tests/
   - Generate blocked while re-validation is pending, with a confirmation showing counts;
   - exceptions CSV sections for excluded loans and overrides;
   - audit `ADJUSTMENT_ADDED` / `ADJUSTMENT_REMOVED` / `ADJUSTMENTS_CONFIRMED`.
-- [ ] K.6 **"Exclude loan" / "Override…" actions** on the Findings page; adjustments summary on the batch page and Files page; audit filters.
+- [ ] K.6 **"Exclude loan" / "Override…" actions** on the Findings page (into a new or open draft request for the same date); adjustments summary on the batch page and Files page; audit filters.
 - [ ] K.7 **Admin pages:** NBFCs & bureau profiles (read-only); Rules & policies (catalogue per NBFC, editable policy overrides with audit).
 - [ ] K.8 Declarative custom rules (compile to SQL) and maintenance in the UI.
 - [ ] K.9 Findings trends across runs (from the kept `validation_summary`).
