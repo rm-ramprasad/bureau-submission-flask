@@ -6,6 +6,23 @@
 
 ---
 
+## Status (22-10-2026)
+
+**Built and tested:** 384 tests passed, 1 skipped (it needs an empty scratch MySQL); the new SQL was also checked on RDS MySQL.
+- **Live on EC2** (`i-080783c59045ca2ca`, Docker; decision 19), with S3 files and RDS MySQL.
+- **Request flow:** request (draft) → exceptions → validation → files (§5.1). Exclusions and overrides are joined into the extract in SQL, with an audit copy per snapshot (§4).
+- **Validation:** 105 UCRF consumer rules. Per NBFC: on/off and outcome, rule parameters, custom rules without SQL (Rules & policies).
+- **UI:** dashboard with request-stage KPIs, tracker, Files, Findings actions, Audit. Every change is audited.
+- **Migrations applied on RDS:** 001–009.
+
+**Open:**
+- J.5 login and J.7 user access to the EC2 app (decide together).
+- H.6 encoding review against a CIC sample file.
+- A.2 / A.4 real LMS schema and bureau member IDs.
+- K.7b NBFC & bureau page, K.9 trends, K.10 / K.11 Commercial and NeSL.
+
+---
+
 ## 1. Scope
 
 1. A **Flask UI** where the internal team picks:
@@ -13,9 +30,9 @@
    - an **as-of date**
    - **one or more submission types**: Consumer now; Commercial and NeSL later
    - **one or more bureaus**: Experian, CIBIL, CRIF High Mark, Equifax
-   - a **run mode**: **Validate** (findings only) or **Generate** (validate + files)
-2. Each click is stored as rows in one request table and processed by an **independent worker**.
-3. **Validation results are stored in tables** and tracked across runs. **Files are downloaded** from the batch page.
+   - then optional **exceptions** (exclusions, overrides), **validation**, and **files** per bureau (§5.1 request flow)
+2. Each request is stored as rows in one request table and processed by an **independent worker**.
+3. **Validation results are stored in tables** and tracked across runs. **Files are downloaded** from the batch and Files pages.
 4. **Context:** one LMS provider on AWS, ~50 NBFCs, one MySQL engine, **one schema per NBFC** with possible column differences.
 
 ## 2. Decisions log
@@ -353,8 +370,8 @@ tests/
   - exceptions CSV sections for excluded loans and overrides;
   - audit `ADJUSTMENT_ADDED` / `ADJUSTMENT_REMOVED` / `ADJUSTMENTS_CONFIRMED`.
 - [x] K.6 **"Exclude loan" / "Override…" actions** on the Findings page (into the open draft request for the same NBFC, date and type, created on first use; Override opens it pre-filled); adjustments summary on the batch page and Files page; audit filters.
-- [~] K.7 **Rules & policies page built** (22-10-2026; in review): the rule catalogue with what each checks and its SQL / Python check; per NBFC on/off and outcome with a required reason; reset to default; audit `RULE_POLICY_CHANGED` / `RULE_POLICY_RESET`; applies from the next validation. **Rule parameters as data** (migration 008 `validation_parameter`): declared in the pack's `parameters:` (DOB/gender, state/PIN and phone-or-ID cut-off dates, minimum address length, ID patterns for PAN/passport/voter/CKYC/G RAM G), used as `:name` in SQL, via the rule context in Python checks and as `{name}` in messages; per-NBFC overrides on the same page with a reason, audited `RULE_PARAMETER_CHANGED` / `RESET`. Spec-fixed values (DPD cap 900, dates after 01-01-1900, the Aadhaar checksum) stay in code. **Next:** K.8.
-- [ ] K.7 **Admin pages (remaining):** NBFCs & bureau profiles (read-only); Rules & policies (catalogue per NBFC, editable policy overrides with audit).
+- [x] K.7a **Rules & policies page** (22-10-2026): the rule catalogue with what each checks and its SQL / Python check; per NBFC on/off and outcome with a required reason; reset to default; audit `RULE_POLICY_CHANGED` / `RULE_POLICY_RESET`; applies from the next validation. **Rule parameters as data** (migration 008 `validation_parameter`): declared in the pack's `parameters:` (DOB/gender, state/PIN and phone-or-ID cut-off dates, minimum address length, ID patterns for PAN/passport/voter/CKYC/G RAM G), used as `:name` in SQL, via the rule context in Python checks and as `{name}` in messages; per-NBFC overrides on the same page with a reason, audited `RULE_PARAMETER_CHANGED` / `RESET`. Spec-fixed values (DPD cap 900, dates after 01-01-1900, the Aadhaar checksum) stay in code. 
+- [ ] K.7b **NBFCs & bureaus page** (read-only tenant and bureau profile view).
 - [x] K.8 **Custom rules without SQL** (`submissions/validation/custom.py`, migration 009 `validation_rule.definition / created_by`):
   - **Building blocks:** a per-NBFC form on Rules & policies: record type + field; check *required / one of / not one of / between / length / pattern / compare with another field*; optional "only when <field> is one of …"; outcome; message.
   - **Compiled to SQL:** the same shape as the pack rules, stored with its definition. Fields come from the canonical model only and values are validated and quoted (no SQL injection).

@@ -74,11 +74,26 @@ $env:SUBMISSIONS_SECRET_KEY = "<long random string>"      # signs the session / 
 ```
 
 Layout: sidebar navigation (Main / Reports / Admin), top bar with a global **NBFC selector** and **New request**,
-worker status in the sidebar footer. Pages: **New request** (always a validation) · **Submission tracker** · batch page
-(status per row, retry/cancel, snapshot summary, "Generate files from this validation", downloads) · findings (filters,
-CSV export) · **Audit**. Dashboard, Exceptions, Files and Admin arrive in phase K.
-`python -m submissions.web` is Flask's development server. Put a production WSGI server (e.g. waitress or gunicorn)
-behind the internal proxy for real use.
+worker status in the sidebar footer.
+
+**Request flow** (OVERALL_PLAN §5.1): **New request** creates a DRAFT → its **Exceptions** step (exclude loans or
+customers, override OD days / ledger balance / OD amount / settlement amount; tagged with the request ID) → **Submit
+for validation** (locks the exceptions; the extract leaves excluded records out, validation runs on the rest) →
+**Generate files** from the validated request (confirm the adjustment counts, pick bureaus).
+
+| Page | What it does |
+|---|---|
+| **Dashboard** | Request-stage KPI cards (raised, awaiting exceptions, in progress, validated – files pending, completed, failed, cancelled) by period, data KPIs, needs attention, NBFC status, bureaus, recent requests |
+| **New request** / **Exceptions** | Create a draft; drafts waiting for exceptions; the request's Exceptions step |
+| **Submission tracker** | All runs with status / mode / bureau / date filters and paging, or requests by stage |
+| Batch page | Rows, submit, retry / cancel, snapshot and adjustments summary, generate files, downloads |
+| Findings | Filters, CSV export, **Exclude loan** / **Override…** into a new draft request |
+| **Files** | Generated bureau files (S3), filters, downloads |
+| **Audit** | Every action, filterable by action, user and request |
+| **Rules & policies** | Rule catalogue with its SQL / check; per NBFC: on/off and outcome, rule parameters, custom rules without SQL |
+
+`python -m submissions.web` is Flask's development server. On EC2 the Docker image runs it under gunicorn
+(RUNBOOK.md "Deploying on EC2").
 
 ## Worker
 
@@ -114,15 +129,21 @@ open review item (OVERALL_PLAN H.6): re-confirm against a CIC sample file before
 ## Validation
 
 Built-in rules: `submissions/validation/packs/ucrf_consumer_3_74.yaml` (plus REQUIRED/ENUM rules generated from the
-canonical model). Per tenant, add custom SQL rules and change any rule's outcome or on/off state:
+canonical model). The pack also declares **rule parameters** (cut-off dates, minimum address length, ID patterns) used
+as `:name` in SQL and `{name}` in messages. Values fixed by the UCRF spec (DPD cap 900, dates after 01-01-1900, the
+Aadhaar checksum) stay in code.
 
-```python
-from submissions.validation.rules import Rule, save_custom_rule, set_policy
-set_policy(engine, "nbfc_001", "UCRF.TL.WRITTEN_OFF_AMOUNTS_MISSING", outcome="REJECT_RECORD")
-save_custom_rule(engine, "nbfc_002", "CONSUMER", Rule("NBFC002.MY_RULE", "CUSTOM", "account", "WARN", "message",
-                 sql="SELECT a.row_id, a.account_key, NULL AS party_key, NULL AS value FROM c_account a "
-                     "WHERE a.snapshot_id = :snapshot_id AND ..."))
-```
+Everything per NBFC is managed on the **Rules & policies** page and audited:
+
+| What | Stored in | Code |
+|---|---|---|
+| Rule on/off and outcome | `validation_policy` | `rules.set_policy`, `clear_policy` |
+| Rule parameter overrides | `validation_parameter` (migration 008) | `parameters.set_parameter`, `load_parameters` |
+| Custom rules built from a form (required / one of / between / length / pattern / compare, optional "only when") | `validation_rule` with the JSON definition (migration 009) | `custom.save`, compiled by `custom.compile_sql` |
+| Hand-written custom SQL rules | `validation_rule` (no definition) | `rules.save_custom_rule` |
+
+Exclusions and overrides (`submissions/adjustments/`) are joined into the extract in SQL before validation
+(`adjustments/sql.py`); each snapshot keeps a frozen copy and their effects for the audit trail.
 
 Results: `validation_finding` (every finding), `validation_summary` (counts per rule/outcome), `record_outcome`
 (ACCEPTED/REJECTED per account × holder, with the first rejecting rule).

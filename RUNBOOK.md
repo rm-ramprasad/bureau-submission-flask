@@ -95,10 +95,11 @@ Recovery actions appear in **Audit** (actor `recovery`).
 
 ## Audit
 
-The UI **Audit** page (or `audit_event` table) records:
-- run creation, generate-from-validation, retry, cancel and file downloads (with the user);
-- scheduled runs;
-- recovery and purges.
+The UI **Audit** page (or `audit_event` table) records, filterable by action, user and request:
+- **Requests:** creation (DRAFT), submit (`RUN_SUBMITTED`), generate-from-validation, retry, cancel or discard, and file downloads, with the user.
+- **Exceptions:** `ADJUSTMENT_ADDED` / `ADJUSTMENT_REMOVED` (keys and reasons), and `ADJUSTMENTS_CONFIRMED` at generate.
+- **Rule configuration:** `RULE_POLICY_CHANGED` / `RESET`, `RULE_PARAMETER_CHANGED` / `RESET`, `CUSTOM_RULE_ADDED` / `CHANGED` / `DELETED`, each with a reason and before → after.
+- **System:** scheduled runs, recovery and purges.
 
 ## Troubleshooting
 
@@ -113,6 +114,12 @@ The UI **Audit** page (or `audit_event` table) records:
 | Generate fails with `NoCredentialsError` | No AWS credentials on the worker host: attach an IAM role or configure a profile |
 | `Missing or invalid form token` | The page was open too long or the secret key changed. Reload and resubmit |
 | Many `UCRF.ENUM.*` findings | Client codes missing from the mapping lookups. `python -m submissions.onboarding.dry_run --tenant <id>` lists them |
+| A request stays DRAFT | Drafts are not picked up until **Submit for validation** on its Exceptions step (Dashboard: "Awaiting exceptions") |
+| "Already open (draft, pending or running)" | One open request per NBFC, date and type: submit or discard the draft, or wait for the run |
+| `… must be on the app's MySQL server` | Exclusions/overrides are joined in SQL, so the NBFC's LMS schema must be on the app's MySQL server (insert_select, or no separate SUBMISSIONS_SOURCE_DATABASE_URL) |
+| `UCRF.ADJ.NOT_FOUND` warnings | An exclusion or override matched no loan / customer in the extract: check the number on the Exceptions step |
+| "Confirm the excluded loans and overrides" | Tick the confirmation on the generate form (required when a request has adjustments) |
+| A rule behaves differently for one NBFC | Rules & policies, filter "Only changed for this NBFC", plus its rule parameters and custom rules; **history** shows who changed what |
 
 ## Deploying on EC2 (Docker)
 
@@ -180,6 +187,16 @@ Then log out and back in.
 - Logs rotate at 5 × 20 MB per container.
 - The instance holds no data (everything is in MySQL and S3). If it's lost, launch a new one and repeat steps 2–3 with the same `.env` values.
 - Keep a copy of `.env` somewhere safe, such as a password manager or SSM Parameter Store. Without the same secret key, open UI sessions log out; nothing else is affected.
+
+## Migrations so far
+
+| File | Adds |
+|---|---|
+| 001–005 | Requests, tenants, canonical model (`c_*`), validation, operations (heartbeat, audit) |
+| 006 | Exclusions and overrides: `submission_adjustment`, frozen `snapshot_adjustment`, `snapshot_adjustment_effect`, view `v_snapshot_adjustment`, request counts |
+| 007 | `submission_adjustment.batch_id`: exceptions belong to a request (DRAFT status) |
+| 008 | `validation_parameter`: per-NBFC rule parameter overrides |
+| 009 | `validation_rule.definition` / `created_by`: custom rules built without SQL |
 
 ## Database changes
 
