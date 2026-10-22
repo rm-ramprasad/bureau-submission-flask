@@ -53,6 +53,11 @@ The web, worker and retention role needs this least-privilege policy:
 
 With SSE-KMS, also allow `kms:GenerateDataKey` and `kms:Decrypt` on that key.
 
+**Current EC2 (`i-080783c59045ca2ca`):**
+- **Shared role:** it uses the shared role `analytics-bi-demo-InstanceRole-…`. Our permissions are in the inline policy `bureau-s3-permission`.
+- **Exceptions in a second policy:** the role's `analytics-query-runtime` policy denies S3 writes and deletes. Its statements `DenyS3WritesExceptAthenaResultsAndBureauFiles` and `DenyS3DeletesExceptBureauFiles` exclude `opta-s3-demo/bureau-submissions/*`.
+- **If someone edits that policy and drops the exception:** file generation fails with `AccessDenied ... explicit deny in an identity-based policy`, and retention can't delete files.
+
 ## Scheduled tasks
 
 Use Windows Task Scheduler (or cron). Each task runs one command and exits.

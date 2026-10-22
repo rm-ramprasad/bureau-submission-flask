@@ -39,7 +39,8 @@
 | 15 | Adjustments (exclusions + overrides) | Users capture **loan account numbers and/or customer IDs to exclude**, and **overrides** for OD days, ledger balance, OD amount and settlement amount, each with an optional reason. They are applied **in the data layer through the SQL view `v_snapshot_adjustment`** while the snapshot is built, **before validation**, so validation checks the final data. Excluding a customer excludes every loan they hold, whole. Applied adjustments are frozen on the snapshot. Clicking Generate confirms and audits them. |
 | 18 | File storage | Generated files and exception CSVs are written to **AWS S3** (`s3://<bucket>/<prefix>/<tenant>/<batch>/<file>`). The URI is stored on `submission_request`. UI downloads stream from S3 through the app (private bucket). Writes are conditional, so nothing is overwritten. Encryption is SSE-S3 or SSE-KMS. Credentials come from the AWS chain (IAM role). The local store is kept for development and tests. |
 | 17 | Validate first, always | No direct GENERATE runs. The New request form and scheduler create **Validate** runs only. Files come only from "Generate files from this validation". |
-| 16 | Deferred | J.5 login, H.6 encoding review, A.2/A.4 real bureau IDs and LMS schema: later. |
+| 16 | Deferred | J.5 login, J.7 user access to the EC2 app, H.6 encoding review, A.2/A.4 real bureau IDs and LMS schema: later. |
+| 19 | Hosting | **One EC2 (Amazon Linux 2023), Docker Compose** (web + worker from one image; Python and libraries pinned in the image), host cron for scheduled tasks, releases shipped through S3 (`deploy/package.ps1` → `deploy/update.sh`). Sized for about 5 internal users: no load balancer or scaling. Live on `i-080783c59045ca2ca` since 22-10-2026, verified end to end (validate, generate to S3, download). |
 
 ## 3. Architecture
 
@@ -218,7 +219,7 @@ tests/
 ### Phase A: Inputs
 - [x] A.1 Core design decisions (§2)
 - [ ] A.2 Base LMS schema + one customisation sample
-- [ ] A.3 DB access model (same cluster vs replica), hosting
+- [ ] A.3 DB access model (same cluster vs replica). Hosting: done, see decision 19
 - [ ] A.4 Bureau values per tenant; CIC sample file
 - [ ] A.5 Re-run, retention and TH decisions
 
@@ -285,6 +286,11 @@ tests/
 - [x] J.4 Audit trail (`audit_event`, UI Audit page) for UI actions, downloads, scheduler, recovery, purge; [RUNBOOK.md](RUNBOOK.md)
 - [ ] J.5 Login via `current_user()` hook (when needed)
 - [x] J.6 Worker heartbeat (`worker_heartbeat`) + UI banner "No worker running" when the last poll is older than 30 s
+- [x] J.8 EC2 deployment (decision 19): Dockerfile, compose, `deploy/` scripts, IAM (including the deny exceptions on the shared instance role), security groups EC2 ↔ RDS; RUNBOOK "Deploying on EC2"
+- [ ] J.7 **User access to the EC2 app (deferred):**
+  - Today it's reached only through an SSM port-forward tunnel (`localhost:8000`).
+  - **To decide:** how the ~5 users connect. With an office network or VPN into the VPC, add inbound 8000 from that range on `sg-0945fe12331ab8cd0`, then use `http://<private-ip>:8000`. Without one, each user runs the SSM tunnel.
+  - Do this together with J.5 login. Never open 8000 on the public IP while there's no login and only HTTP.
 
 ### Phase K: UI and extensions (order = build order)
 - [x] K.1 **Layout:**
