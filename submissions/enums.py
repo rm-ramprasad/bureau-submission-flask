@@ -86,6 +86,7 @@ class ReportingCycle(StrEnum):
 
 class RequestStatus(StrEnum):
     """Status of one row (one type x bureau file)."""
+    DRAFT = "DRAFT"            # created by the New request form; exceptions are captured, then it is submitted
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
@@ -95,6 +96,7 @@ class RequestStatus(StrEnum):
 
 class BatchStatus(StrEnum):
     """Derived status of all rows created by one click. Never stored."""
+    DRAFT = "DRAFT"
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"

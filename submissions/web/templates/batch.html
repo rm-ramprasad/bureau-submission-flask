@@ -11,6 +11,18 @@
   </div>
 </div>
 
+{% if rows | selectattr('status.value', 'equalto', 'DRAFT') | list %}
+<div class="panel status stale">
+  <div><strong>Step 2 of 4: exceptions.</strong> Add any loans or customers to exclude and values to override,
+    then submit the request for validation. Excluded records are left out of the validation and the files.</div>
+  <div class="actions">
+    <a class="button secondary" href="{{ url_for('ui.request_exceptions', batch_id=batch_id) }}">Exceptions</a>
+    <form method="post" action="{{ url_for('ui.submit_request', batch_id=batch_id) }}" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit">Submit for validation</button></form>
+  </div>
+</div>
+{% endif %}
+
 <div class="panel flush">
   <div class="table-wrap"><table>
     <thead><tr><th>#</th><th>Type</th><th>Bureau</th><th>Status</th><th class="num">Records</th><th class="num">Accepted</th><th class="num">Rejected</th><th>Snapshot</th><th>Output</th><th></th></tr></thead>
@@ -68,7 +80,7 @@
       <p><strong>Adjustments:</strong> {{ info.adjusted.excluded_accounts }} loan(s) excluded ·
         {{ info.adjusted.overridden_accounts }} loan(s) overridden
         {% if info.adjusted.not_found %}· <span class="badge b-WARN">{{ info.adjusted.not_found }} not found</span>{% endif %}
-        · <a href="{{ url_for('ui.exceptions', as_of=info.snapshot.as_of_date.isoformat(), type=info.snapshot.submission_type.value) }}">Exceptions</a></p>
+        {% if info.snapshot.batch_id %}· <a href="{{ url_for('ui.request_exceptions', batch_id=info.snapshot.batch_id, type=info.snapshot.submission_type.value) }}">Exceptions</a>{% endif %}</p>
     {% endif %}
     <span class="muted">Mapping {{ info.snapshot.mapping_version }} · canonical {{ info.snapshot.canonical_version }}</span>
     {% if info.summary %} · <a href="{{ url_for('ui.findings', snapshot_id=snapshot_id) }}">All findings</a> ·
@@ -84,11 +96,7 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="request_id" value="{{ r.request_id }}">
   {% set info = snapshots[r.snapshot_id] %}
-  {% set exceptions_url = url_for('ui.exceptions', as_of=r.as_of_date.isoformat(), type=r.submission_type.value) %}
-  {% if info.stale %}
-    <div class="flash error">Exclusions or overrides changed after this validation, so its files would not include them.
-      <a href="{{ exceptions_url }}">Re-validate from the Exceptions page</a>, then generate from the new validation.</div>
-  {% else %}
+  {% set exceptions_url = url_for('ui.request_exceptions', batch_id=batch_id, type=r.submission_type.value) %}
   <p class="muted">Files are written from snapshot #{{ r.snapshot_id }}: exactly the data validated above.</p>
   {% if info.adjusted.excluded_accounts or info.adjusted.overridden_accounts %}
     <label class="confirm"><input type="checkbox" name="confirm_adjustments" value="1" required>
@@ -102,7 +110,6 @@
     {% else %}<span class="muted">No active bureau profiles for this NBFC.</span>{% endfor %}
   </div>
   {% if bureau_options[r.request_id] %}<p><button type="submit">Generate files</button></p>{% endif %}
-  {% endif %}
 </form>
 {% endfor %}
 {% endblock %}

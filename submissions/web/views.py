@@ -12,10 +12,11 @@ from flask import (
 )
 
 from submissions.adjustments import (
-    AdjustmentError, AdjustmentNotFoundError, applied_summary, parse_keys, parse_override_value,
+    AdjustmentError, AdjustmentNotFoundError, AdjustmentScope, applied_summary, parse_keys, parse_override_value,
 )
 from submissions.enums import (
-    AdjustmentKind, OverrideField, ReportingCycle, RequestStatus, RunMode, SnapshotStatus, SubmissionType,
+    AdjustmentKind, BatchStatus, OverrideField, ReportingCycle, RequestStatus, RunMode, SnapshotStatus,
+    SubmissionType,
 )
 from submissions.ops import audit
 from submissions.pipeline import enabled_types
@@ -131,7 +132,7 @@ def create_run():
         if not_enabled:
             raise RequestValidationError(f"Not available yet: {', '.join(not_enabled)}")
         batch_id = s.requests.create_batch(tenant.tenant_id, as_of, RunMode.VALIDATE, form["submission_types"], (),
-                                           form["reporting_cycle"] or None, current_user())
+                                           form["reporting_cycle"] or None, current_user(), draft=True)
     except (TenantNotFoundError, InactiveTenantError):
         flash("Select an active NBFC.", "error")
         return _render_new(form, 400)
@@ -142,9 +143,10 @@ def create_run():
         flash("Check the date and selections.", "error")
         return _render_new(form, 400)
     audit.record(s.engine, current_user(), "RUN_CREATED", tenant_id=tenant.tenant_id, target=batch_id,
-                 as_of=as_of, mode=str(RunMode.VALIDATE), types=form["submission_types"])
-    flash("Validation queued. This page refreshes until it finishes.", "ok")
-    return redirect(url_for("ui.batch", batch_id=batch_id))
+                 as_of=as_of, mode=str(RunMode.VALIDATE), types=form["submission_types"], status="DRAFT")
+    session["tenant"] = tenant.tenant_id                  # follow the request's NBFC in the top bar
+    flash(f"Request {batch_id} created. Add any exclusions or overrides, then submit it for validation.", "ok")
+    return redirect(url_for("ui.request_exceptions", batch_id=batch_id))
 
 
 # ---------------------------------------------------------------- batch detail
@@ -167,9 +169,7 @@ def batch(batch_id: str):
     bureau_options = {r.request_id: [p.bureau_code for p in s.bureaus.list(r.tenant_id, r.submission_type)]
                       for r in generate_from}
     for snapshot_id, info in snapshots.items():
-        snap = info["snapshot"]
         info["adjusted"] = applied_summary(s.engine, snapshot_id)
-        info["stale"] = s.adjustments.is_stale(snapshot_id, snap.tenant_id, snap.as_of_date, snap.submission_type)
     tenant = s.tenants.get(rows[0].tenant_id)
     return render_template("batch.html", batch_id=batch_id, rows=rows, tenant=tenant, snapshots=snapshots,
                            generate_from=generate_from, bureau_options=bureau_options,
@@ -188,9 +188,6 @@ def generate_from_validation(batch_id: str):
     bureaus = request.form.getlist("bureau_codes")
     adjusted = applied_summary(s.engine, source.snapshot_id)
     try:
-        if s.adjustments.is_stale(source.snapshot_id, source.tenant_id, source.as_of_date, source.submission_type):
-            raise RequestValidationError("Exclusions or overrides changed after this validation. Re-validate from "
-                                         "the Exceptions page, then generate from the new validation.")
         if (adjusted.excluded_accounts or adjusted.overridden_accounts) and not request.form.get("confirm_adjustments"):
             raise RequestValidationError("Confirm the excluded loans and overrides before generating.")
         if not bureaus:
@@ -272,145 +269,163 @@ def download(request_id: int, kind: str):
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
-# ---------------------------------------------------------------- exceptions (exclusions + overrides)
-def _scope_from(values) -> tuple[date, SubmissionType]:
-    """As-of date and type from a form or query string (defaults: last month end, consumer)."""
-    try:
-        as_of = date.fromisoformat(values.get("as_of") or last_month_end().isoformat())
-        sub_type = SubmissionType(values.get("type") or SubmissionType.CONSUMER.value)
-    except ValueError:
-        abort(400)
-    return as_of, sub_type
+# ---------------------------------------------------------------- exceptions: step 2 of a request
+def _request_row(batch_id: str):
+    """The request's row for the chosen submission type (?type= / form type; default the first)."""
+    rows = svc().requests.list_batch(batch_id)
+    if not rows or rows[0].run_mode is not RunMode.VALIDATE:
+        abort(404)
+    wanted = request.values.get("type")
+    row = next((r for r in rows if r.submission_type.value == wanted), rows[0])
+    return rows, row
 
 
-def _back_to_exceptions(as_of: date, sub_type: SubmissionType):
-    return redirect(url_for("ui.exceptions", as_of=as_of.isoformat(), type=sub_type.value))
+def _back(batch_id: str, row):
+    return redirect(url_for("ui.request_exceptions", batch_id=batch_id, type=row.submission_type.value))
 
 
-def _exceptions_tenant():
-    tenant_id = selected_tenant()
-    if not tenant_id:
-        flash("Select an NBFC in the top bar first.", "error")
-        return None
-    try:
-        return svc().tenants.get_active(tenant_id)
-    except (TenantNotFoundError, InactiveTenantError):
-        flash("Select an active NBFC in the top bar.", "error")
-        return None
+def _draft_or_flash(row) -> bool:
+    if row.status is RequestStatus.DRAFT:
+        return True
+    flash("This request was already submitted, so its exceptions are locked. For more exceptions, create a new "
+          "request for the same date.", "error")
+    return False
 
 
 @bp.get("/exceptions")
 def exceptions():
+    """Requests waiting for their exceptions (drafts), for the NBFC chosen in the top bar."""
     s = svc()
-    as_of, sub_type = _scope_from(request.args)
-    tenant_id = selected_tenant()
-    ctx = dict(as_of=as_of, sub_type=sub_type, types=enabled_types(), fields=list(OverrideField), tenant=None,
-               adjustments=[], latest=None, frozen={}, stale=False, effects={}, history=bool(request.args.get("history")))
-    if tenant_id:
-        ctx["tenant"] = s.tenants.get(tenant_id)
-        ctx["adjustments"] = s.adjustments.list(tenant_id, as_of, sub_type, include_removed=ctx["history"])
-        latest = s.snapshots.latest(tenant_id, sub_type, as_of)
-        if latest:
-            ctx.update(latest=latest, frozen=s.adjustments.frozen(latest.snapshot_id),
-                       stale=s.adjustments.is_stale(latest.snapshot_id, tenant_id, as_of, sub_type))
-            for e in s.adjustments.applied(latest.snapshot_id):
-                ctx["effects"].setdefault(e.adjustment_id, []).append(e)
-    return render_template("exceptions.html", **ctx)
+    drafts = [b for b in s.requests.list_batches(limit=100, tenant_id=selected_tenant())
+              if b.status is BatchStatus.DRAFT]
+    return render_template("exceptions_list.html", drafts=drafts)
 
 
-@bp.post("/exceptions/exclude")
-def add_exclusions():
+@bp.get("/batches/<batch_id>/exceptions")
+def request_exceptions(batch_id: str):
     s = svc()
-    as_of, sub_type = _scope_from(request.form)
-    tenant = _exceptions_tenant()
-    if tenant is None:
-        return _back_to_exceptions(as_of, sub_type)
+    rows, row = _request_row(batch_id)
+    scope = AdjustmentScope.of(row)
+    history = bool(request.args.get("history"))
+    frozen, effects = {}, {}
+    if row.snapshot_id:
+        frozen = s.adjustments.frozen(row.snapshot_id)
+        for e in s.adjustments.applied(row.snapshot_id):
+            effects.setdefault(e.adjustment_id, []).append(e)
+    return render_template("exceptions.html", batch_id=batch_id, rows=rows, row=row,
+                           tenant=s.tenants.get(row.tenant_id), fields=list(OverrideField), history=history,
+                           adjustments=s.adjustments.list(scope, include_removed=history), frozen=frozen,
+                           effects=effects, is_draft=row.status is RequestStatus.DRAFT)
+
+
+@bp.post("/batches/<batch_id>/exceptions/exclude")
+def add_exclusions(batch_id: str):
+    s = svc()
+    _, row = _request_row(batch_id)
+    if not _draft_or_flash(row):
+        return _back(batch_id, row)
     kind = AdjustmentKind.EXCLUDE_CUSTOMER if request.form.get("kind") == "customer" else AdjustmentKind.EXCLUDE_ACCOUNT
     try:
-        result = s.adjustments.add_exclusions(tenant.tenant_id, as_of, sub_type, kind,
-                                              parse_keys(request.form.get("keys", "")),
+        result = s.adjustments.add_exclusions(AdjustmentScope.of(row), kind, parse_keys(request.form.get("keys", "")),
                                               request.form.get("reason"), current_user())
     except AdjustmentError as exc:
         flash(str(exc), "error")
-        return _back_to_exceptions(as_of, sub_type)
+        return _back(batch_id, row)
     if result.added:
-        audit.record(s.engine, current_user(), "ADJUSTMENT_ADDED", tenant_id=tenant.tenant_id,
-                     target=f"{as_of:%Y-%m-%d} {sub_type}", kind=str(kind), keys=result.added[:200],
-                     count=len(result.added), reason=request.form.get("reason") or None)
+        audit.record(s.engine, current_user(), "ADJUSTMENT_ADDED", tenant_id=row.tenant_id, target=batch_id,
+                     kind=str(kind), keys=result.added[:200], count=len(result.added),
+                     reason=request.form.get("reason") or None)
     what = "customer(s)" if kind is AdjustmentKind.EXCLUDE_CUSTOMER else "loan(s)"
     msg = f"{len(result.added)} {what} added to the exclusions."
     if result.already_present:
         msg += f" Already excluded: {', '.join(result.already_present[:10])}."
-    flash(msg + " Re-validate to apply.", "ok")
-    return _back_to_exceptions(as_of, sub_type)
+    flash(msg, "ok")
+    return _back(batch_id, row)
 
 
-@bp.post("/exceptions/override")
-def add_override():
+@bp.post("/batches/<batch_id>/exceptions/override")
+def add_override(batch_id: str):
     s = svc()
-    as_of, sub_type = _scope_from(request.form)
-    tenant = _exceptions_tenant()
-    if tenant is None:
-        return _back_to_exceptions(as_of, sub_type)
+    _, row = _request_row(batch_id)
+    if not _draft_or_flash(row):
+        return _back(batch_id, row)
     try:
         field = OverrideField(request.form.get("field", ""))
     except ValueError:
         flash("Choose the field to override.", "error")
-        return _back_to_exceptions(as_of, sub_type)
+        return _back(batch_id, row)
     account = request.form.get("account_number", "")
     try:
         value = parse_override_value(field, request.form.get("value", ""))
-        new_id, replaced = s.adjustments.add_override(tenant.tenant_id, as_of, sub_type, account, field, value,
+        new_id, replaced = s.adjustments.add_override(AdjustmentScope.of(row), account, field, value,
                                                       request.form.get("reason"), current_user())
     except AdjustmentError as exc:
         flash(str(exc), "error")
-        return _back_to_exceptions(as_of, sub_type)
-    audit.record(s.engine, current_user(), "ADJUSTMENT_ADDED", tenant_id=tenant.tenant_id,
-                 target=f"{as_of:%Y-%m-%d} {sub_type}", kind=str(AdjustmentKind.OVERRIDE), adjustment_id=new_id,
-                 account_number=account.strip(), field=field.value, value=str(value), replaced=replaced,
-                 reason=request.form.get("reason") or None)
+        return _back(batch_id, row)
+    audit.record(s.engine, current_user(), "ADJUSTMENT_ADDED", tenant_id=row.tenant_id, target=batch_id,
+                 kind=str(AdjustmentKind.OVERRIDE), adjustment_id=new_id, account_number=account.strip(),
+                 field=field.value, value=str(value), replaced=replaced, reason=request.form.get("reason") or None)
     flash(f"Override saved: {account.strip()} {field.label} = {value}"
-          f"{' (replaces the previous one)' if replaced else ''}. Re-validate to apply.", "ok")
-    return _back_to_exceptions(as_of, sub_type)
+          f"{' (replaces the previous one)' if replaced else ''}.", "ok")
+    return _back(batch_id, row)
 
 
-@bp.post("/exceptions/<int:adjustment_id>/remove")
-def remove_adjustment(adjustment_id: int):
+@bp.post("/batches/<batch_id>/exceptions/<int:adjustment_id>/remove")
+def remove_adjustment(batch_id: str, adjustment_id: int):
     s = svc()
+    _, row = _request_row(batch_id)
     try:
         adj = s.adjustments.get(adjustment_id)
     except AdjustmentNotFoundError:
         abort(404)
-    if adj.tenant_id != selected_tenant():
-        abort(403)
+    if adj.batch_id != batch_id:
+        abort(404)
+    if not _draft_or_flash(row):
+        return _back(batch_id, row)
     try:
         s.adjustments.remove(adjustment_id, current_user())
-        audit.record(s.engine, current_user(), "ADJUSTMENT_REMOVED", tenant_id=adj.tenant_id,
-                     target=f"{adj.as_of_date:%Y-%m-%d} {adj.submission_type}", adjustment_id=adjustment_id,
-                     kind=str(adj.kind), key=adj.key, field=adj.field.value if adj.field else None)
-        flash(f"Removed: {adj.kind.value.replace('_', ' ').lower()} {adj.key}. Re-validate to apply.", "ok")
+        audit.record(s.engine, current_user(), "ADJUSTMENT_REMOVED", tenant_id=adj.tenant_id, target=batch_id,
+                     adjustment_id=adjustment_id, kind=str(adj.kind), key=adj.key,
+                     field=adj.field.value if adj.field else None)
+        flash(f"Removed: {adj.kind.value.replace('_', ' ').lower()} {adj.key}.", "ok")
     except AdjustmentError as exc:
         flash(str(exc), "error")
-    return _back_to_exceptions(adj.as_of_date, adj.submission_type)
+    return _back(batch_id, row)
 
 
-@bp.post("/exceptions/revalidate")
-def revalidate():
+@bp.post("/batches/<batch_id>/submit")
+def submit_request(batch_id: str):
+    """Step 3: lock the exceptions and queue the validation (DRAFT -> PENDING)."""
     s = svc()
-    as_of, sub_type = _scope_from(request.form)
-    tenant = _exceptions_tenant()
-    if tenant is None:
-        return _back_to_exceptions(as_of, sub_type)
+    rows, _ = _request_row(batch_id)
     try:
-        batch_id = s.requests.create_batch(tenant.tenant_id, as_of, RunMode.VALIDATE, [sub_type], (),
-                                           request.form.get("reporting_cycle") or None, current_user())
-    except (RequestValidationError, DuplicateActiveRequestError) as exc:
+        s.requests.submit_draft(batch_id)
+    except InvalidTransitionError as exc:
         flash(str(exc), "error")
-        return _back_to_exceptions(as_of, sub_type)
-    audit.record(s.engine, current_user(), "RUN_CREATED", tenant_id=tenant.tenant_id, target=batch_id, as_of=as_of,
-                 mode=str(RunMode.VALIDATE), types=[sub_type.value], source="exceptions")
-    flash("Re-validation queued with the current exclusions and overrides.", "ok")
+        return redirect(url_for("ui.batch", batch_id=batch_id))
+    counts = {r.submission_type.value: len(s.adjustments.list(AdjustmentScope.of(r))) for r in rows}
+    audit.record(s.engine, current_user(), "RUN_SUBMITTED", tenant_id=rows[0].tenant_id, target=batch_id,
+                 adjustments=counts)
+    flash("Submitted for validation. Excluded records are left out of the extract; validation runs on the rest. "
+          "This page refreshes until it finishes.", "ok")
     return redirect(url_for("ui.batch", batch_id=batch_id))
+
+
+@bp.post("/batches/<batch_id>/discard")
+def discard_request(batch_id: str):
+    """Cancel a draft request (its exceptions stay in the history)."""
+    s = svc()
+    rows, _ = _request_row(batch_id)
+    drafts = [r for r in rows if r.status is RequestStatus.DRAFT]
+    if not drafts:
+        flash("Only a draft request can be discarded.", "error")
+        return redirect(url_for("ui.batch", batch_id=batch_id))
+    for r in drafts:
+        s.requests.cancel(r.request_id)
+    audit.record(s.engine, current_user(), "REQUEST_CANCELLED", tenant_id=rows[0].tenant_id, target=batch_id,
+                 batch_id=batch_id, draft=True)
+    flash(f"Draft request {batch_id} discarded.", "ok")
+    return redirect(url_for("ui.exceptions"))
 
 
 @bp.get("/audit")

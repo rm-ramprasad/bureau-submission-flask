@@ -16,6 +16,7 @@ _PK = BigInteger().with_variant(Integer(), "sqlite")
 submission_adjustment = Table(
     "submission_adjustment", metadata,
     Column("adjustment_id", _PK, primary_key=True, autoincrement=True),
+    Column("batch_id", String(40)),                      # the request it belongs to (migration 007)
     Column("tenant_id", String(30), ForeignKey("tenant.tenant_id"), nullable=False),
     Column("as_of_date", Date, nullable=False),
     Column("submission_type", String(20), nullable=False),
@@ -30,6 +31,7 @@ submission_adjustment = Table(
     Column("removed_by", String(100)),
     Column("removed_at", DateTime),
     Index("ix_submission_adjustment_scope", "tenant_id", "as_of_date", "submission_type"),
+    Index("ix_submission_adjustment_batch", "batch_id"),
 )
 
 # Frozen copy of the adjustments in force when the snapshot was extracted (audit trail)

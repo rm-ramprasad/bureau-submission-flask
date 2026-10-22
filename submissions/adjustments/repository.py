@@ -1,7 +1,8 @@
-"""Capture and list user adjustments (exclusions and overrides) per tenant + as-of date + submission type.
+"""Capture and list user adjustments (exclusions and overrides) of one request.
 
-Adjustments are not tied to a snapshot: they apply to every snapshot built for that scope afterwards, so they
-carry over to the next validation. Removal is a soft delete; history stays.
+Adjustments belong to a request (batch_id) and its NBFC, as-of date and submission type. They are captured while
+the request is a DRAFT; submitting it for validation locks them (the caller checks the request status). Removal
+is a soft delete; history stays. More exceptions after validation means a new request.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import Engine, and_, func, select, text, update
+from sqlalchemy import Engine, and_, select, text, update
 
 from submissions.adjustments.models import Adjustment, AppliedAdjustment
 from submissions.adjustments.tables import snapshot_adjustment_effect as e
@@ -38,6 +39,26 @@ class AdjustmentNotFoundError(LookupError):
 class AddResult:
     added: list[str]
     already_present: list[str]
+
+
+@dataclass(frozen=True)
+class AdjustmentScope:
+    """The request (batch) an adjustment belongs to, with its NBFC, as-of date and submission type."""
+    batch_id: str
+    tenant_id: str
+    as_of_date: date
+    submission_type: SubmissionType
+
+    @classmethod
+    def of(cls, request) -> "AdjustmentScope":
+        return cls(request.batch_id, request.tenant_id, request.as_of_date, SubmissionType(request.submission_type))
+
+    def where(self):
+        return and_(t.c.batch_id == self.batch_id, t.c.submission_type == str(self.submission_type))
+
+    def values(self) -> dict:
+        return dict(batch_id=self.batch_id, tenant_id=self.tenant_id, as_of_date=self.as_of_date,
+                    submission_type=str(self.submission_type))
 
 
 def parse_keys(text: str) -> list[str]:
@@ -81,38 +102,30 @@ class AdjustmentRepository:
         self.engine = engine
         self.clock = clock
 
-    @staticmethod
-    def _scope(tenant_id: str, as_of_date: date, submission_type: SubmissionType | str):
-        return and_(t.c.tenant_id == tenant_id, t.c.as_of_date == as_of_date,
-                    t.c.submission_type == str(submission_type))
-
     # ------------------------------------------------------------------ capture
-    def add_exclusions(self, tenant_id: str, as_of_date: date, submission_type: SubmissionType | str,
-                       kind: AdjustmentKind, keys: Iterable[str], reason: str | None, user: str) -> AddResult:
+    def add_exclusions(self, scope: AdjustmentScope, kind: AdjustmentKind, keys: Iterable[str], reason: str | None,
+                       user: str) -> AddResult:
         """Exclude loans (EXCLUDE_ACCOUNT) or customers (EXCLUDE_CUSTOMER). Keys already excluded are skipped."""
         if kind not in (AdjustmentKind.EXCLUDE_ACCOUNT, AdjustmentKind.EXCLUDE_CUSTOMER):
             raise AdjustmentError(f"Not an exclusion: {kind}")
         keys = list(dict.fromkeys(k.strip() for k in keys if k and k.strip()))
         if not keys:
             raise AdjustmentError("Enter at least one loan account number or customer ID")
-        col = t.c.customer_id if kind is AdjustmentKind.EXCLUDE_CUSTOMER else t.c.account_number
+        customer = kind is AdjustmentKind.EXCLUDE_CUSTOMER
+        col = t.c.customer_id if customer else t.c.account_number
         reason, now = _reason(reason), self.clock()
         with self.engine.begin() as conn:
-            existing = set(conn.execute(select(col).where(
-                self._scope(tenant_id, as_of_date, submission_type), t.c.kind == str(kind),
-                t.c.removed_at.is_(None), col.in_(keys))).scalars())
+            existing = set(conn.execute(select(col).where(scope.where(), t.c.kind == str(kind),
+                                                          t.c.removed_at.is_(None), col.in_(keys))).scalars())
             added = [k for k in keys if k not in existing]
             if added:
-                conn.execute(t.insert(), [dict(
-                    tenant_id=tenant_id, as_of_date=as_of_date, submission_type=str(submission_type),
-                    kind=str(kind), account_number=None if kind is AdjustmentKind.EXCLUDE_CUSTOMER else k,
-                    customer_id=k if kind is AdjustmentKind.EXCLUDE_CUSTOMER else None, field=None,
-                    override_value=None, reason=reason, created_by=user, created_at=now) for k in added])
+                conn.execute(t.insert(), [scope.values() | dict(
+                    kind=str(kind), account_number=None if customer else k, customer_id=k if customer else None,
+                    field=None, override_value=None, reason=reason, created_by=user, created_at=now) for k in added])
         return AddResult(added, [k for k in keys if k in existing])
 
-    def add_override(self, tenant_id: str, as_of_date: date, submission_type: SubmissionType | str,
-                     account_number: str, field: OverrideField, value: Decimal, reason: str | None,
-                     user: str) -> tuple[int, int | None]:
+    def add_override(self, scope: AdjustmentScope, account_number: str, field: OverrideField, value: Decimal,
+                     reason: str | None, user: str) -> tuple[int, int | None]:
         """Override one field of one loan. Replaces (soft-removes) an active override of the same loan + field.
 
         Returns (new adjustment id, replaced adjustment id or None).
@@ -123,13 +136,12 @@ class AdjustmentRepository:
         reason, now = _reason(reason), self.clock()
         with self.engine.begin() as conn:
             replaced = conn.execute(select(t.c.adjustment_id).where(
-                self._scope(tenant_id, as_of_date, submission_type), t.c.kind == str(AdjustmentKind.OVERRIDE),
-                t.c.account_number == account_number, t.c.field == str(field), t.c.removed_at.is_(None))).scalar()
+                scope.where(), t.c.kind == str(AdjustmentKind.OVERRIDE), t.c.account_number == account_number,
+                t.c.field == str(field), t.c.removed_at.is_(None))).scalar()
             if replaced is not None:
                 conn.execute(update(t).where(t.c.adjustment_id == replaced).values(removed_by=user, removed_at=now))
             new_id = conn.execute(t.insert().values(
-                tenant_id=tenant_id, as_of_date=as_of_date, submission_type=str(submission_type),
-                kind=str(AdjustmentKind.OVERRIDE), account_number=account_number, customer_id=None,
+                **scope.values(), kind=str(AdjustmentKind.OVERRIDE), account_number=account_number, customer_id=None,
                 field=str(field), override_value=value, reason=reason, created_by=user,
                 created_at=now)).inserted_primary_key[0]
         return int(new_id), replaced
@@ -151,21 +163,12 @@ class AdjustmentRepository:
             raise AdjustmentNotFoundError(f"Adjustment {adjustment_id} not found")
         return Adjustment.from_row(row)
 
-    def list(self, tenant_id: str, as_of_date: date, submission_type: SubmissionType | str,
-             include_removed: bool = False) -> list[Adjustment]:
-        q = select(t).where(self._scope(tenant_id, as_of_date, submission_type)).order_by(t.c.adjustment_id.desc())
+    def list(self, scope: AdjustmentScope, include_removed: bool = False) -> list[Adjustment]:
+        q = select(t).where(scope.where()).order_by(t.c.adjustment_id.desc())
         if not include_removed:
             q = q.where(t.c.removed_at.is_(None))
         with self.engine.connect() as conn:
             return [Adjustment.from_row(r) for r in conn.execute(q)]
-
-    def last_change(self, tenant_id: str, as_of_date: date,
-                    submission_type: SubmissionType | str) -> datetime | None:
-        """Latest add or remove in this scope (a snapshot built before it is stale)."""
-        with self.engine.connect() as conn:
-            added, removed = conn.execute(select(func.max(t.c.created_at), func.max(t.c.removed_at)).where(
-                self._scope(tenant_id, as_of_date, submission_type))).one()
-        return max((d for d in (added, removed) if d is not None), default=None)
 
     def applied(self, snapshot_id: int) -> list[AppliedAdjustment]:
         """Effects of the snapshot's frozen adjustments (old -> new values, excluded loans and borrowers)."""
@@ -174,12 +177,6 @@ class AdjustmentRepository:
                                 .order_by(e.c.adjustment_id, e.c.account_key, e.c.party_key)).all()
         return [AppliedAdjustment(**{k: v for k, v in r._mapping.items() if k != "effect_id"}
                                   | {"field": OverrideField(r.field) if r.field else None}) for r in rows]
-
-    def is_stale(self, snapshot_id: int, tenant_id: str, as_of_date: date,
-                 submission_type: SubmissionType | str) -> bool:
-        """True if adjustments were added or removed since the snapshot froze its copy (re-validate first)."""
-        active = {a.adjustment_id for a in self.list(tenant_id, as_of_date, submission_type)}
-        return active != set(self.frozen(snapshot_id))
 
     def frozen(self, snapshot_id: int) -> dict[int, int]:
         """adjustment_id -> loans affected, for the adjustments frozen on this snapshot (from the view)."""

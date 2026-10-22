@@ -1,7 +1,7 @@
 """Adjustments in the extract: all set-based SQL, run on the app server next to the tenant's LMS schema.
 
 For a snapshot, in order:
-  1. FREEZE   the active submission_adjustment rows into snapshot_adjustment (audit trail);
+  1. FREEZE   the request's (batch's) active submission_adjustment rows into snapshot_adjustment (audit trail);
   2. RESOLVE  them against the tenant's account / account_holder SELECTs into snapshot_adjustment_effect:
               EXCLUDE per loan (customer exclusions expand to every loan the customer holds), EXCLUDE_PARTY per
               borrower left with no loan, OVERRIDE per loan field with the source value as old_value;
@@ -20,7 +20,7 @@ _FREEZE = """INSERT INTO snapshot_adjustment
 SELECT s.snapshot_id, a.adjustment_id, a.kind, a.account_number, a.customer_id, a.field, a.override_value,
        a.reason, a.created_by, a.created_at
 FROM extract_snapshot s
-JOIN submission_adjustment a ON a.tenant_id = s.tenant_id AND a.as_of_date = s.as_of_date
+JOIN submission_adjustment a ON a.batch_id = s.batch_id AND a.tenant_id = s.tenant_id
     AND a.submission_type = s.submission_type AND a.removed_at IS NULL
 WHERE s.snapshot_id = :snapshot_id"""
 

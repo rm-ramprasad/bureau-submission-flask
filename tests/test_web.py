@@ -43,14 +43,18 @@ def token(client, path="/runs/new") -> str:
     return re.search(r'name="csrf_token" value="([^"]+)"', html).group(1)
 
 
-def post_run(client, **fields):
+def post_run(client, submit=True, **fields):
+    """Create a request; by default also submit it (no exceptions), as the user would on step 2."""
     data = {"csrf_token": token(client), "tenant_id": "nbfc_001", "as_of_date": "2026-09-30",
             "submission_types": ["CONSUMER"], "reporting_cycle": "ME"} | fields
-    return client.post("/runs/new", data=data)
+    resp = client.post("/runs/new", data=data)
+    if submit and resp.status_code == 302:
+        client.post(f"/batches/{batch_id_from(resp)}/submit", data={"csrf_token": token(client)})
+    return resp
 
 
 def batch_id_from(resp) -> str:
-    return resp.headers["Location"].rsplit("/", 1)[1]
+    return re.search(r"/batches/([^/?]+)", resp.headers["Location"]).group(1)
 
 
 # ---------------------------------------------------------------- pages
@@ -116,7 +120,7 @@ def test_validate_run_is_queued(client, requests_repo):
     rows = requests_repo.list_batch(batch_id_from(resp))
     assert [(r.run_mode, r.bureau_code, r.requested_by, r.status) for r in rows] == [
         (M.VALIDATE, None, "internal-user", S.PENDING)]
-    assert "refreshing every 5 s" in client.get(resp.headers["Location"]).get_data(as_text=True)
+    assert "refreshing every 5 s" in client.get(f"/batches/{batch_id_from(resp)}").get_data(as_text=True)
 
 
 def test_new_request_is_always_a_validation(client, requests_repo):
@@ -148,7 +152,7 @@ def test_invalid_runs_show_errors(client, fields, message):
 def test_duplicate_run_rejected(client):
     post_run(client)
     resp = post_run(client)
-    assert resp.status_code == 400 and "Already pending or running" in resp.get_data(as_text=True)
+    assert resp.status_code == 400 and "Already open (draft, pending or running)" in resp.get_data(as_text=True)
 
 
 def test_generate_needs_bureau_profiles(client, engine, worker, requests_repo):

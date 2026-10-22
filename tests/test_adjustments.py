@@ -1,4 +1,4 @@
-"""Exclusions and overrides: capture rules, the view, the adjust step in the snapshot build, validation reacting."""
+"""Exclusions and overrides of a request: capture rules, the SQL join into the extract, validation reacting."""
 
 from dataclasses import replace
 from datetime import date
@@ -8,21 +8,22 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from submissions.adjustments import (
-    AdjustmentError, AdjustmentRepository, applied_summary, parse_keys, parse_override_value,
-)
-from submissions.bureaus.seed import seed as seed_bureaus
-from submissions.canonical.schema import ENTITY_TABLES
 from mock_data.generate_mock_data import load_into
 from submissions.adapters.extract import ExtractError, run_extract
 from submissions.adapters.mapping import load_mapping
+from submissions.adjustments import (
+    AdjustmentError, AdjustmentRepository, AdjustmentScope, applied_summary, parse_keys, parse_override_value,
+)
 from submissions.adjustments.tables import snapshot_adjustment
+from submissions.bureaus.seed import seed as seed_bureaus
+from submissions.canonical.schema import ENTITY_TABLES
 from submissions.enums import (
     AdjustmentKind as K, BureauCode as B, ExtractStrategy, OverrideField as F, RequestStatus as S, RunMode as M,
     SubmissionType as T,
 )
 from submissions.migrate import MIGRATIONS_DIR
 from submissions.pipeline import Services
+from submissions.requests import InvalidTransitionError
 from submissions.snapshot import SnapshotRepository
 from submissions.storage import LocalFileStore
 from submissions.validation.tables import validation_finding
@@ -51,14 +52,15 @@ def worker(engine, requests_repo, tenant_repo, bureau_repo, tmp_path):
     return Worker(services, requests_repo, tenant_repo, bureau_repo, worker_id="w-test")
 
 
-def effects(engine, snapshot_id, action):
-    return [a for a in AdjustmentRepository(engine).applied(snapshot_id) if a.action == action]
+def draft(requests_repo, tenant="nbfc_001") -> AdjustmentScope:
+    batch = requests_repo.create_batch(tenant, AS_OF, M.VALIDATE, [T.CONSUMER], draft=True)
+    return AdjustmentScope.of(requests_repo.list_batch(batch)[0])
 
 
-def validate(worker, requests_repo):
-    batch = requests_repo.create_batch("nbfc_001", AS_OF, M.VALIDATE, [T.CONSUMER])
+def submit(worker, requests_repo, scope):
+    requests_repo.submit_draft(scope.batch_id)
     worker.run_once()
-    (row,) = requests_repo.list_batch(batch)
+    (row,) = requests_repo.list_batch(scope.batch_id)
     assert row.status is S.SUCCEEDED, row.error_message
     return row
 
@@ -77,6 +79,10 @@ def findings(engine, snapshot_id, rule_id):
     with engine.connect() as conn:
         return conn.execute(select(f.account_key, f.value).where(f.snapshot_id == snapshot_id,
                                                                  f.rule_id == rule_id)).all()
+
+
+def effects(engine, snapshot_id, action):
+    return [a for a in AdjustmentRepository(engine).applied(snapshot_id) if a.action == action]
 
 
 # ---------------------------------------------------------------- input rules
@@ -108,44 +114,55 @@ def test_override_values_rejected(field, raw, message):
         parse_override_value(field, raw)
 
 
-def test_duplicates_skipped_and_override_replaces_previous(adjustments):
-    first = adjustments.add_exclusions("nbfc_001", AS_OF, T.CONSUMER, K.EXCLUDE_ACCOUNT, ["A1", "A2"], " r ", "u")
-    again = adjustments.add_exclusions("nbfc_001", AS_OF, T.CONSUMER, K.EXCLUDE_ACCOUNT, ["A2", "A3"], None, "u")
+def test_duplicates_skipped_and_override_replaces_previous(adjustments, requests_repo):
+    scope = draft(requests_repo)
+    first = adjustments.add_exclusions(scope, K.EXCLUDE_ACCOUNT, ["A1", "A2"], " r ", "u")
+    again = adjustments.add_exclusions(scope, K.EXCLUDE_ACCOUNT, ["A2", "A3"], None, "u")
     assert (first.added, again.added, again.already_present) == (["A1", "A2"], ["A3"], ["A2"])
-    one, replaced = adjustments.add_override("nbfc_001", AS_OF, T.CONSUMER, "A9", F.DAYS_PAST_DUE, Decimal(30), None, "u")
-    two, replaced_two = adjustments.add_override("nbfc_001", AS_OF, T.CONSUMER, "A9", F.DAYS_PAST_DUE, Decimal(60),
-                                                 None, "u")
+    one, replaced = adjustments.add_override(scope, "A9", F.DAYS_PAST_DUE, Decimal(30), None, "u")
+    _, replaced_two = adjustments.add_override(scope, "A9", F.DAYS_PAST_DUE, Decimal(60), None, "u")
     assert replaced is None and replaced_two == one
-    active = adjustments.list("nbfc_001", AS_OF, T.CONSUMER)
+    active = adjustments.list(scope)
     assert [a.override_value for a in active if a.kind is K.OVERRIDE] == [Decimal(60)]
-    assert adjustments.list("nbfc_001", AS_OF, T.CONSUMER)[0].reason is None
     assert {a.reason for a in active if a.key == "A1"} == {"r"}                    # trimmed
+    assert {a.batch_id for a in active} == {scope.batch_id}                       # tagged with the request
 
 
-def test_remove_is_soft_and_scoped(adjustments, clock):
-    adjustments.add_exclusions("nbfc_001", AS_OF, T.CONSUMER, K.EXCLUDE_ACCOUNT, ["A1"], None, "u")
-    adjustments.add_exclusions("nbfc_001", date(2026, 8, 31), T.CONSUMER, K.EXCLUDE_ACCOUNT, ["A1"], None, "u")
-    (adj,) = adjustments.list("nbfc_001", AS_OF, T.CONSUMER)
-    clock.advance(60)
+def test_remove_is_soft_and_scoped_to_the_request(adjustments, requests_repo):
+    scope, other = draft(requests_repo), draft(requests_repo, "nbfc_002")
+    adjustments.add_exclusions(scope, K.EXCLUDE_ACCOUNT, ["A1"], None, "u")
+    adjustments.add_exclusions(other, K.EXCLUDE_ACCOUNT, ["A1"], None, "u")
+    (adj,) = adjustments.list(scope)
     adjustments.remove(adj.adjustment_id, "boss")
-    assert adjustments.list("nbfc_001", AS_OF, T.CONSUMER) == []
-    (gone,) = adjustments.list("nbfc_001", AS_OF, T.CONSUMER, include_removed=True)
-    assert gone.removed_by == "boss" and adjustments.last_change("nbfc_001", AS_OF, T.CONSUMER) == clock.now
-    assert len(adjustments.list("nbfc_001", date(2026, 8, 31), T.CONSUMER)) == 1      # other as-of date untouched
+    assert adjustments.list(scope) == []
+    (gone,) = adjustments.list(scope, include_removed=True)
+    assert gone.removed_by == "boss" and len(adjustments.list(other)) == 1
     with pytest.raises(AdjustmentError, match="already removed"):
         adjustments.remove(adj.adjustment_id, "boss")
 
 
-# ---------------------------------------------------------------- applied in the snapshot build
-def test_no_adjustments_changes_nothing(worker, requests_repo, engine):
-    row = validate(worker, requests_repo)
+# ---------------------------------------------------------------- the request lifecycle
+def test_draft_is_not_picked_up_until_submitted(worker, requests_repo):
+    scope = draft(requests_repo)
+    assert worker.run_once() == 0
+    with pytest.raises(Exception, match="Already open"):           # the draft holds the duplicate guard
+        requests_repo.create_batch("nbfc_001", AS_OF, M.VALIDATE, [T.CONSUMER])
+    submit(worker, requests_repo, scope)
+    with pytest.raises(InvalidTransitionError, match="not a draft"):
+        requests_repo.submit_draft(scope.batch_id)
+
+
+# ---------------------------------------------------------------- joined into the extract
+def test_no_adjustments_changes_nothing(worker, requests_repo):
+    row = submit(worker, requests_repo, draft(requests_repo))
     assert (row.total_records, row.accepted_records, row.rejected_records) == (56, 48, 8)
     assert (row.excluded_accounts, row.overridden_accounts) == (0, 0)
 
 
 def test_excluding_a_joint_loan_removes_it_whole(worker, requests_repo, engine, adjustments):
-    adjustments.add_exclusions("nbfc_001", AS_OF, T.CONSUMER, K.EXCLUDE_ACCOUNT, [JOINT_LOAN], "disputed", "u")
-    row = validate(worker, requests_repo)
+    scope = draft(requests_repo)
+    adjustments.add_exclusions(scope, K.EXCLUDE_ACCOUNT, [JOINT_LOAN], "disputed", "u")
+    row = submit(worker, requests_repo, scope)
     assert rows(engine, "account", row.snapshot_id, account_number=JOINT_LOAN) == []
     assert rows(engine, "account_holder", row.snapshot_id, account_key="L00002") == []     # both holders
     assert row.total_records == 54 and row.excluded_accounts == 1
@@ -153,8 +170,9 @@ def test_excluding_a_joint_loan_removes_it_whole(worker, requests_repo, engine, 
 
 
 def test_excluding_a_customer_excludes_every_loan_they_hold(worker, requests_repo, engine, adjustments):
-    adjustments.add_exclusions("nbfc_001", AS_OF, T.CONSUMER, K.EXCLUDE_CUSTOMER, [MULTI_LOAN_CUSTOMER], None, "u")
-    row = validate(worker, requests_repo)
+    scope = draft(requests_repo)
+    adjustments.add_exclusions(scope, K.EXCLUDE_CUSTOMER, [MULTI_LOAN_CUSTOMER], None, "u")
+    row = submit(worker, requests_repo, scope)
     snap = row.snapshot_id
     for number in ("B123HL54004637", "B107CC76729014"):
         assert rows(engine, "account", snap, account_number=number) == []
@@ -166,18 +184,21 @@ def test_excluding_a_customer_excludes_every_loan_they_hold(worker, requests_rep
 
 
 def test_override_feeds_validation(worker, requests_repo, engine, adjustments):
-    adjustments.add_override("nbfc_001", AS_OF, T.CONSUMER, CLEAN_LOAN, F.DAYS_PAST_DUE, Decimal(45), "late", "u")
-    row = validate(worker, requests_repo)
+    scope = draft(requests_repo)
+    adjustments.add_override(scope, CLEAN_LOAN, F.DAYS_PAST_DUE, Decimal(45), "late", "u")
+    row = submit(worker, requests_repo, scope)
     (account,) = rows(engine, "account", row.snapshot_id, account_number=CLEAN_LOAN)
     assert account.days_past_due == 45
     flagged = {f.account_key for f in findings(engine, row.snapshot_id, "UCRF.TL.DPD_WITHOUT_OVERDUE")}
     assert account.account_key in flagged                              # validation saw the overridden value
-    (applied,) = AdjustmentRepository(engine).applied(row.snapshot_id)
+    (applied,) = effects(engine, row.snapshot_id, "OVERRIDE")
     assert (applied.field, applied.old_value, applied.new_value) == (F.DAYS_PAST_DUE, Decimal(0), Decimal(45))
     assert row.overridden_accounts == 1
 
-    adjustments.add_override("nbfc_001", AS_OF, T.CONSUMER, CLEAN_LOAN, F.AMOUNT_OVERDUE, Decimal("5000"), None, "u")
-    again = validate(worker, requests_repo)                            # re-validate: a new snapshot
+    second = draft(requests_repo)                                      # more exceptions: a new request
+    adjustments.add_override(second, CLEAN_LOAN, F.DAYS_PAST_DUE, Decimal(45), None, "u")
+    adjustments.add_override(second, CLEAN_LOAN, F.AMOUNT_OVERDUE, Decimal("5000"), None, "u")
+    again = submit(worker, requests_repo, second)
     assert account.account_key not in {f.account_key for f in findings(engine, again.snapshot_id,
                                                                        "UCRF.TL.DPD_WITHOUT_OVERDUE")}
     (account,) = rows(engine, "account", again.snapshot_id, account_number=CLEAN_LOAN)
@@ -186,28 +207,31 @@ def test_override_feeds_validation(worker, requests_repo, engine, adjustments):
 
 
 def test_unmatched_adjustments_are_reported(worker, requests_repo, engine, adjustments):
-    adjustments.add_exclusions("nbfc_001", AS_OF, T.CONSUMER, K.EXCLUDE_ACCOUNT, ["NO-SUCH-LOAN"], None, "u")
-    adjustments.add_override("nbfc_001", AS_OF, T.CONSUMER, "NOPE", F.AMOUNT_OVERDUE, Decimal(1), None, "u")
-    row = validate(worker, requests_repo)
+    scope = draft(requests_repo)
+    adjustments.add_exclusions(scope, K.EXCLUDE_ACCOUNT, ["NO-SUCH-LOAN"], None, "u")
+    adjustments.add_override(scope, "NOPE", F.AMOUNT_OVERDUE, Decimal(1), None, "u")
+    row = submit(worker, requests_repo, scope)
     values = sorted(f.value for f in findings(engine, row.snapshot_id, "UCRF.ADJ.NOT_FOUND"))
     assert values == ["EXCLUDE_ACCOUNT NO-SUCH-LOAN", "OVERRIDE NOPE amount_overdue"]
     assert (row.total_records, row.accepted_records) == (56, 48)       # WARN only
     assert applied_summary(engine, row.snapshot_id).not_found == 2
 
 
-def test_removed_and_other_scope_adjustments_do_not_apply(worker, requests_repo, adjustments):
-    adjustments.add_exclusions("nbfc_001", AS_OF, T.CONSUMER, K.EXCLUDE_ACCOUNT, [JOINT_LOAN], None, "u")
-    (adj,) = adjustments.list("nbfc_001", AS_OF, T.CONSUMER)
+def test_only_this_requests_active_adjustments_apply(worker, requests_repo, adjustments):
+    other = draft(requests_repo, "nbfc_002")
+    adjustments.add_exclusions(other, K.EXCLUDE_ACCOUNT, [CLEAN_LOAN], None, "u")
+    scope = draft(requests_repo)
+    adjustments.add_exclusions(scope, K.EXCLUDE_ACCOUNT, [JOINT_LOAN], None, "u")
+    (adj,) = adjustments.list(scope)
     adjustments.remove(adj.adjustment_id, "u")
-    adjustments.add_exclusions("nbfc_001", date(2026, 8, 31), T.CONSUMER, K.EXCLUDE_ACCOUNT, [CLEAN_LOAN], None, "u")
-    adjustments.add_exclusions("nbfc_002", AS_OF, T.CONSUMER, K.EXCLUDE_ACCOUNT, [CLEAN_LOAN], None, "u")
-    row = validate(worker, requests_repo)
+    row = submit(worker, requests_repo, scope)
     assert (row.total_records, row.excluded_accounts) == (56, 0)
 
 
-def test_generate_reuses_the_adjusted_snapshot(worker, requests_repo, engine, adjustments):
-    adjustments.add_exclusions("nbfc_001", AS_OF, T.CONSUMER, K.EXCLUDE_ACCOUNT, [JOINT_LOAN], None, "u")
-    v = validate(worker, requests_repo)
+def test_generate_reuses_the_adjusted_snapshot(worker, requests_repo, adjustments):
+    scope = draft(requests_repo)
+    adjustments.add_exclusions(scope, K.EXCLUDE_ACCOUNT, [JOINT_LOAN], None, "u")
+    v = submit(worker, requests_repo, scope)
     g = requests_repo.create_batch("nbfc_001", AS_OF, M.GENERATE, [T.CONSUMER], [B.CIBIL], snapshot_id=v.snapshot_id)
     worker.run_once()
     (row,) = requests_repo.list_batch(g)
@@ -222,16 +246,15 @@ def test_migration_view_matches_code():
     assert ADJUSTMENT_VIEW_SQL + ";" in sql
 
 
-def test_frozen_copy_is_the_audit_trail(worker, requests_repo, engine, adjustments, clock):
-    adjustments.add_exclusions("nbfc_001", AS_OF, T.CONSUMER, K.EXCLUDE_CUSTOMER, [MULTI_LOAN_CUSTOMER],
-                               "deceased", "ops-user")
-    adjustments.add_exclusions("nbfc_001", AS_OF, T.CONSUMER, K.EXCLUDE_ACCOUNT, ["NO-SUCH-LOAN"], None, "u")
-    row = validate(worker, requests_repo)
-    by_kind = {a.kind: a for a in adjustments.list("nbfc_001", AS_OF, T.CONSUMER)}
+def test_frozen_copy_is_the_audit_trail(worker, requests_repo, engine, adjustments):
+    scope = draft(requests_repo)
+    adjustments.add_exclusions(scope, K.EXCLUDE_CUSTOMER, [MULTI_LOAN_CUSTOMER], "deceased", "ops-user")
+    adjustments.add_exclusions(scope, K.EXCLUDE_ACCOUNT, ["NO-SUCH-LOAN"], None, "u")
+    row = submit(worker, requests_repo, scope)
+    by_kind = {a.kind: a for a in adjustments.list(scope)}
     customer, missing = by_kind[K.EXCLUDE_CUSTOMER], by_kind[K.EXCLUDE_ACCOUNT]
     assert AdjustmentRepository(engine).frozen(row.snapshot_id) == {customer.adjustment_id: 2,
                                                                    missing.adjustment_id: 0}
-    clock.advance(60)
     adjustments.remove(customer.adjustment_id, "u")                     # later edits don't rewrite history
     with engine.connect() as conn:
         frozen = conn.execute(select(snapshot_adjustment).where(
@@ -240,13 +263,14 @@ def test_frozen_copy_is_the_audit_trail(worker, requests_repo, engine, adjustmen
     assert (frozen.customer_id, frozen.reason, frozen.created_by) == (MULTI_LOAN_CUSTOMER, "deceased", "ops-user")
 
 
-def test_adjustments_need_the_lms_on_the_app_server(engine, lms_engine, tenant_repo, adjustments):
-    adjustments.add_exclusions("nbfc_001", AS_OF, T.CONSUMER, K.EXCLUDE_ACCOUNT, [JOINT_LOAN], None, "u")
+def test_adjustments_need_the_lms_on_the_app_server(engine, lms_engine, tenant_repo, requests_repo, adjustments):
+    scope = draft(requests_repo)
+    adjustments.add_exclusions(scope, K.EXCLUDE_ACCOUNT, [JOINT_LOAN], None, "u")
     tenant = tenant_repo.get("nbfc_001")                                 # stream from a separate server
     with pytest.raises(ExtractError, match="must be on the app's MySQL server"):
         run_extract(tenant=tenant, mapping=load_mapping(ROOT / tenant.mapping_path), submission_type="CONSUMER",
                     as_of_date=AS_OF, app_engine=engine, source_engine=lms_engine,
-                    snapshots=SnapshotRepository(engine), owner="t")
+                    snapshots=SnapshotRepository(engine), owner="t", batch_id=scope.batch_id)
 
 
 def test_without_adjustments_a_separate_lms_server_still_works(engine, lms_engine, tenant_repo):

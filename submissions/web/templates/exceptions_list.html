@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Exceptions · Bureau Submissions{% endblock %}
+{% block crumb %}Exceptions{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Exceptions</h1>
+    <p class="subtitle">Requests waiting for their exceptions. Exclusions and overrides belong to a request: create a
+      request, add them, then submit it for validation.</p>
+  </div>
+  <a class="button" href="{{ url_for('ui.new_run') }}">New request</a>
+</div>
+<div class="panel flush">
+  {% if drafts %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Request</th><th>NBFC</th><th>As of</th><th>Types</th><th>Requested</th><th></th></tr></thead>
+    <tbody>{% for b in drafts %}
+      <tr><td class="mono"><a href="{{ url_for('ui.request_exceptions', batch_id=b.batch_id) }}">{{ b.batch_id }}</a></td>
+        <td>{{ b.tenant_id }}</td><td>{{ b.as_of_date | d }}</td>
+        <td>{{ b.submission_types | map(attribute='value') | join(', ') | title }}</td>
+        <td>{{ b.requested_at | dt }} · {{ b.requested_by or '—' }}</td>
+        <td><a class="button small" href="{{ url_for('ui.request_exceptions', batch_id=b.batch_id) }}">Add exceptions</a></td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="panel-body muted">No requests are waiting for exceptions{{ ' for this NBFC' if selected_tenant }}.</div>
+  {% endif %}
+</div>
+{% endblock %}

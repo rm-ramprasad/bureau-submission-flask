@@ -41,7 +41,8 @@ class ActiveConflict:
 class DuplicateActiveRequestError(Exception):
     def __init__(self, conflicts: list[ActiveConflict]):
         self.conflicts = conflicts
-        super().__init__(f"Already pending or running: {', '.join(map(str, conflicts)) or 'another request'}")
+        super().__init__(f"Already open (draft, pending or running): "
+                         f"{', '.join(map(str, conflicts)) or 'another request'}. Submit or discard it first.")
 
 
 class RequestNotFoundError(LookupError):
@@ -73,8 +74,10 @@ class RequestRepository:
         reporting_cycle: ReportingCycle | str | None = None,
         requested_by: str | None = None,
         snapshot_id: int | None = None,
+        draft: bool = False,
     ) -> str:
-        """Insert the PENDING rows for one click, all sharing a new batch_id.
+        """Insert the rows for one click, all sharing a new batch_id: PENDING, or DRAFT (`draft`, VALIDATE only)
+        so exceptions can be captured against the batch before it is submitted (`submit_draft`).
 
         VALIDATE: one row per submission type (validation is bureau-independent; no bureaus allowed).
         GENERATE: one row per bureau, always from an already validated snapshot (`snapshot_id` required):
@@ -102,6 +105,8 @@ class RequestRepository:
             raise RequestValidationError("A reused snapshot belongs to exactly one submission type")
         if as_of_date > now.date():
             raise RequestValidationError("As-of date cannot be in the future")
+        if draft and mode is not RunMode.VALIDATE:
+            raise RequestValidationError("Only validation requests start as drafts")
 
         units = [(st, bc) for st in types for bc in (bureaus or [None])]
         keys = [active_key(tenant_id, as_of_date, st, mode, bc) for st, bc in units]
@@ -113,7 +118,8 @@ class RequestRepository:
         rows = [dict(batch_id=batch_id, tenant_id=tenant_id, run_mode=str(mode), as_of_date=as_of_date,
                      submission_type=str(st), bureau_code=str(bc) if bc else None, snapshot_id=snapshot_id,
                      reporting_cycle=str(cycle) if cycle else None, requested_by=requested_by,
-                     requested_at=now, status=str(S.PENDING), active_key=key, attempt_count=0)
+                     requested_at=now, status=str(S.DRAFT if draft else S.PENDING), active_key=key,
+                     attempt_count=0)
                 for (st, bc), key in zip(units, keys)]
         try:
             with self.engine.begin() as conn:
@@ -191,6 +197,15 @@ class RequestRepository:
         with self.engine.begin() as conn:
             conn.execute(update(t).where(t.c.request_id == request_id)
                          .values(output_file_path=None, exceptions_file_path=None))
+
+    def submit_draft(self, batch_id: str) -> int:
+        """Send a DRAFT batch to validation (DRAFT -> PENDING). Its exceptions are locked from now on."""
+        with self.engine.begin() as conn:
+            moved = conn.execute(update(t).where(t.c.batch_id == batch_id, t.c.status == str(S.DRAFT))
+                                 .values(status=str(S.PENDING), requested_at=self.clock())).rowcount
+        if moved == 0:
+            raise InvalidTransitionError(f"Request {batch_id} is not a draft; it was already submitted or cancelled")
+        return moved
 
     # ------------------------------------------------------------------ worker
     def claim_next(self, worker_id: str) -> SubmissionRequest | None:

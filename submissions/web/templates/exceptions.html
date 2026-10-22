@@ -1,57 +1,47 @@
 {% extends "base.html" %}
-{% block title %}Exceptions · Bureau Submissions{% endblock %}
-{% block crumb %}Exceptions{% endblock %}
+{% block title %}Exceptions {{ batch_id }} · Bureau Submissions{% endblock %}
+{% block crumb %}<a href="{{ url_for('ui.batches') }}">Submission tracker</a> <span>/</span>
+  <a class="mono" href="{{ url_for('ui.batch', batch_id=batch_id) }}">{{ batch_id }}</a> <span>/</span> Exceptions{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>Exceptions{% if tenant %} · {{ tenant.display_name }}{% endif %}</h1>
-    <p class="subtitle">Exclude loans or customers and override loan values for one as-of date. They are applied to the
-      data when it is extracted, so the next validation checks exactly what will be submitted.</p>
+    <h1>Exceptions · {{ tenant.display_name }}</h1>
+    <p class="subtitle">Request <span class="mono">{{ batch_id }}</span> · as of {{ row.as_of_date | d }} · {{ row.submission_type.value | title }}
+      · requested by {{ row.requested_by or '—' }}</p>
   </div>
 </div>
 
-{% if not tenant %}
-<div class="panel"><p>Select an NBFC in the top bar to capture its exclusions and overrides.</p></div>
-{% else %}
+<ol class="steps">
+  <li class="done">Request</li>
+  <li class="{{ 'current' if is_draft else 'done' }}">Exceptions</li>
+  <li class="{{ 'done' if row.status.value == 'SUCCEEDED' else ('current' if not is_draft else '') }}">Validation</li>
+  <li>Files</li>
+</ol>
 
-<form method="get" class="panel row scope">
-  <div><label for="as_of">As-of date</label><input type="date" id="as_of" name="as_of" value="{{ as_of.isoformat() }}" required></div>
-  <div><label for="type">Submission type</label>
-    <select id="type" name="type">{% for t in types %}<option value="{{ t.value }}" {{ 'selected' if t == sub_type }}>{{ t.value | title }}</option>{% endfor %}</select></div>
-  <div class="choices"><label><input type="checkbox" name="history" value="1" {{ 'checked' if history }}> Show removed</label></div>
-  <div><button type="submit" class="secondary">Show</button></div>
-</form>
+{% if rows | length > 1 %}
+<p class="choices">{% for r in rows %}
+  <a class="button {{ '' if r.request_id == row.request_id else 'secondary' }} small"
+     href="{{ url_for('ui.request_exceptions', batch_id=batch_id, type=r.submission_type.value) }}">{{ r.submission_type.value | title }}</a>
+{% endfor %}</p>
+{% endif %}
 
-{# ------------------------------------------------ validation status #}
-<div class="panel status {{ 'stale' if stale or not latest }}">
-  <div>
-    {% if not latest %}
-      <strong>No validation yet for {{ as_of | d }}.</strong>
-      <span class="muted">Adjustments apply when you validate.</span>
-    {% elif stale %}
-      <strong>Re-validation needed.</strong>
-      Adjustments changed after the latest validation
-      (<a href="{{ url_for('ui.findings', snapshot_id=latest.snapshot_id) }}">snapshot #{{ latest.snapshot_id }}</a>, {{ latest.created_at | dt }} UTC).
-      Files cannot be generated until it is re-validated.
-    {% else %}
-      <strong>Up to date.</strong>
-      The latest validation (<a href="{{ url_for('ui.findings', snapshot_id=latest.snapshot_id) }}">snapshot #{{ latest.snapshot_id }}</a>,
-      {{ latest.created_at | dt }} UTC) includes every current adjustment. Generate files from its batch page{% if latest.batch_id %} (<a href="{{ url_for('ui.batch', batch_id=latest.batch_id) }}">open</a>){% endif %}.
-    {% endif %}
+{% if is_draft %}
+<div class="panel status stale">
+  <div><strong>Add exceptions, then submit.</strong> Excluded loans and customers are left out of the extract, overrides
+    replace the LMS values, and validation runs on the remaining records. Nothing is required here: you can submit
+    straight away. After submitting, the exceptions are locked.</div>
+  <div class="actions">
+    <form method="post" action="{{ url_for('ui.discard_request', batch_id=batch_id) }}" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Discard request</button></form>
+    <form method="post" action="{{ url_for('ui.submit_request', batch_id=batch_id) }}" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit">Submit for validation</button></form>
   </div>
-  <form method="post" action="{{ url_for('ui.revalidate') }}" class="inline">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="as_of" value="{{ as_of.isoformat() }}"><input type="hidden" name="type" value="{{ sub_type.value }}">
-    <button type="submit" class="{{ '' if stale or not latest else 'secondary' }}">Re-validate with adjustments</button>
-  </form>
 </div>
 
-{# ------------------------------------------------ capture #}
 <div class="grid two">
-  <form method="post" action="{{ url_for('ui.add_exclusions') }}" class="panel stack">
+  <form method="post" action="{{ url_for('ui.add_exclusions', batch_id=batch_id) }}" class="panel stack">
     <h2>Exclude</h2>
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="as_of" value="{{ as_of.isoformat() }}"><input type="hidden" name="type" value="{{ sub_type.value }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="type" value="{{ row.submission_type.value }}">
     <div class="choices">
       <label><input type="radio" name="kind" value="account" checked> Loan account numbers</label>
       <label><input type="radio" name="kind" value="customer"> Customer IDs (all their loans)</label>
@@ -63,10 +53,9 @@
     <p><button type="submit">Add exclusions</button></p>
   </form>
 
-  <form method="post" action="{{ url_for('ui.add_override') }}" class="panel stack">
+  <form method="post" action="{{ url_for('ui.add_override', batch_id=batch_id) }}" class="panel stack">
     <h2>Override a value</h2>
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="as_of" value="{{ as_of.isoformat() }}"><input type="hidden" name="type" value="{{ sub_type.value }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="type" value="{{ row.submission_type.value }}">
     <label for="account_number">Loan account number</label>
     <input type="text" id="account_number" name="account_number" maxlength="50" required>
     <div class="row">
@@ -81,11 +70,18 @@
     <p><button type="submit">Save override</button></p>
   </form>
 </div>
+{% else %}
+<div class="panel status">
+  <div><strong>Locked.</strong> This request was submitted on {{ row.requested_at | dt }} UTC, so its exceptions can no
+    longer change. For more exceptions, create a <a href="{{ url_for('ui.new_run') }}">new request</a> for the same date.</div>
+  <a class="button secondary" href="{{ url_for('ui.batch', batch_id=batch_id) }}">Open the request</a>
+</div>
+{% endif %}
 
-{# ------------------------------------------------ current adjustments #}
 <div class="panel flush">
-  <div class="panel-head"><h2>{{ 'All adjustments' if history else 'Current adjustments' }} · {{ as_of | d }} · {{ sub_type.value | title }}</h2>
-    <span class="muted">{{ adjustments | length }} item(s)</span></div>
+  <div class="panel-head"><h2>{{ 'All exceptions' if history else 'Exceptions' }} of this request</h2>
+    <span><span class="muted">{{ adjustments | length }} item(s)</span> ·
+      <a href="{{ url_for('ui.request_exceptions', batch_id=batch_id, type=row.submission_type.value, history=None if history else 1) }}">{{ 'Hide removed' if history else 'Show removed' }}</a></span></div>
   {% if adjustments %}
   <div class="table-wrap"><table>
     <thead><tr><th>Kind</th><th>Loan / customer</th><th>Change</th><th>Reason</th><th>By</th><th>Status</th><th></th></tr></thead>
@@ -103,21 +99,22 @@
         <td>{{ a.created_by }}<div class="hint">{{ a.created_at | dt }}</div></td>
         <td>
           {% if not a.is_active %}<span class="badge b-CANCELLED">Removed</span><div class="hint">{{ a.removed_by }}, {{ a.removed_at | dt }}</div>
-          {% elif a.adjustment_id not in frozen %}<span class="badge b-PENDING">Pending re-validation</span>
-          {% elif frozen[a.adjustment_id] == 0 %}<span class="badge b-WARN">Not found</span><div class="hint">in snapshot #{{ latest.snapshot_id }}</div>
-          {% else %}<span class="badge b-SUCCEEDED">Applied</span><div class="hint">snapshot #{{ latest.snapshot_id }} · {{ frozen[a.adjustment_id] }} loan(s)</div>{% endif %}
+          {% elif is_draft %}<span class="badge b-DRAFT">Will apply</span>
+          {% elif a.adjustment_id not in frozen %}<span class="badge b-PENDING">Waiting for validation</span>
+          {% elif frozen[a.adjustment_id] == 0 %}<span class="badge b-WARN">Not found</span><div class="hint">no such loan / customer in the LMS data</div>
+          {% else %}<span class="badge b-SUCCEEDED">Applied</span><div class="hint">{{ frozen[a.adjustment_id] }} loan(s)</div>{% endif %}
         </td>
-        <td>{% if a.is_active %}
-          <form method="post" action="{{ url_for('ui.remove_adjustment', adjustment_id=a.adjustment_id) }}" class="inline">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="small secondary">Remove</button></form>
+        <td>{% if a.is_active and is_draft %}
+          <form method="post" action="{{ url_for('ui.remove_adjustment', batch_id=batch_id, adjustment_id=a.adjustment_id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="type" value="{{ row.submission_type.value }}">
+            <button class="small secondary">Remove</button></form>
         {% endif %}</td>
       </tr>
     {% endfor %}
     </tbody>
   </table></div>
   {% else %}
-  <div class="panel-body muted">No exclusions or overrides for this date.</div>
+  <div class="panel-body muted">No exclusions or overrides{{ ' yet' if is_draft }}.</div>
   {% endif %}
 </div>
-{% endif %}
 {% endblock %}

@@ -10,6 +10,7 @@ from submissions.enums import AdjustmentKind, OverrideField, SubmissionType
 @dataclass(frozen=True)
 class Adjustment:
     adjustment_id: int
+    batch_id: str | None
     tenant_id: str
     as_of_date: date
     submission_type: SubmissionType

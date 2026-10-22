@@ -186,7 +186,7 @@ def test_schedule_validate_for_all_active_tenants(engine, requests_repo, tenant_
     assert [(r.as_of_date, r.reporting_cycle.value, r.requested_by, r.run_mode) for r in rows] == [
         (AS_OF, "ME", "scheduler", M.VALIDATE)]
     again = schedule_runs(engine, "ME", today=date(2026, 10, 21))     # still pending -> skipped, not duplicated
-    assert again.created == {} and "Already pending" in again.skipped["nbfc_001"]
+    assert again.created == {} and "Already open" in again.skipped["nbfc_001"]
     tenant_repo.set_active("nbfc_002", False)
     assert "nbfc_002" not in schedule_runs(engine, "W1", today=date(2026, 10, 21)).created
 
